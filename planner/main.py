@@ -14,7 +14,7 @@ RABBIT_LOGIN = 'admin'
 RABBIT_HOST = 'localhost'
 RABBIT_PORT = 5672
 
-
+# ========== Part for DataManager ==========
 
 def split_and_upload_txt(input_file: str, lines_per_file: int = 1_000_000, bucket="mapreduce", prefix="chunks/") -> list:
     '''Splits a large txt file into smaller parts and uploads them to MinIO.
@@ -53,6 +53,7 @@ def split_and_upload_txt(input_file: str, lines_per_file: int = 1_000_000, bucke
 
         return file_names
 
+# ========== Part for Task Planner ==========
 
 def send_task(ch, task_type: str, address: str, main_task_id, task_id, storage: str = "minio", bucket: str = "mapreduce"):
     task = {
