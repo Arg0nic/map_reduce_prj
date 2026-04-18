@@ -86,6 +86,36 @@ def download_input_file(task: dict, task_paths: TaskPaths) -> str:
     raise ValueError(f"Unknown storage type: {storage_type}")
 
 
+def run_map_phase(input_file: str, spill_dir: str) -> None:
+    # Run the mapper and write intermediate spill files to the local task dir.
+    mapper = WordCountMapper()
+    map_executor = MapExecutor(
+        mapper,
+        jsonDataSink(spill_dir, mode="jsonl"),
+        txtDataSource(),
+        threshold=5_000,
+    )
+    map_executor.process(filepath=input_file)
+
+
+def run_shuffle_phase(spill_dir: str, shuffle_dir: str) -> None:
+    # Repartition spill files into per-partition shuffle outputs for reduce.
+    shuffler = WordCountShuffler(num_parts=4, flush_threshold=2_000)
+    shuffle_executor = ShuffleExecutor(
+        shuffler,
+        source=jsonDataSource(),
+        sink=jsonDataSink(shuffle_dir, mode="jsonl"),
+    )
+    shuffle_executor.process(spill_dir)
+
+
+def cleanup_directory(dirpath: str) -> None:
+    # Cleanup is intentionally tolerant: missing directories are a normal case
+    # in retries and partial execution paths.
+    if os.path.isdir(dirpath):
+        shutil.rmtree(dirpath)
+
+
 def process_map_task(task: dict, task_paths: TaskPaths, worker_id: str) -> None:
     main_task_id = task.get("main_task_id")
     worker_task_id = task.get("task_id")
@@ -98,28 +128,13 @@ def process_map_task(task: dict, task_paths: TaskPaths, worker_id: str) -> None:
 
     # Map writes spill files first, then shuffle repartitions them into the
     # per-partition files consumed later by reduce workers.
-    mapper = WordCountMapper()
-    map_executor = MapExecutor(
-        mapper,
-        jsonDataSink(task_paths.spill_files_dir, mode="jsonl"),
-        txtDataSource(),
-        threshold=5_000,
-    )
-    map_executor.process(filepath=input_file)
-
+    run_map_phase(input_file, task_paths.spill_files_dir)
     print("Mapping phase completed. Starting shuffling phase...")
 
-    shuffler = WordCountShuffler(num_parts=4, flush_threshold=2_000)
-    shuffle_executor = ShuffleExecutor(
-        shuffler,
-        source=jsonDataSource(),
-        sink=jsonDataSink(task_paths.shuffle_files_dir, mode="jsonl"),
-    )
-    shuffle_executor.process(task_paths.spill_files_dir)
+    run_shuffle_phase(task_paths.spill_files_dir, task_paths.shuffle_files_dir)
     print("Shuffling phase completed.")
 
-    if os.path.isdir(task_paths.spill_files_dir):
-        shutil.rmtree(task_paths.spill_files_dir)
+    cleanup_directory(task_paths.spill_files_dir)
 
     # Upload shuffle outputs only after local processing succeeds, so retries
     # re-run the whole task instead of publishing partial data.
@@ -210,7 +225,7 @@ def upload_shuffle_files(
     # Remove local task artifacts only after every upload has been confirmed.
     if os.path.isdir(task_dir):
         try:
-            shutil.rmtree(task_dir)
+            cleanup_directory(task_dir)
             print(f"[{worker_id}] cleaned up local files: {task_dir}")
         except Exception as exc:
             print(f"[{worker_id}] warning: failed to remove {task_dir}: {exc}")
