@@ -49,7 +49,6 @@ def callback(ch, method, properties, body):
             process_reduce_task(task, task_paths, worker_id=WORKER_ID)
         else:
             raise ValueError(f"Unknown task type: {task_type}")
-
         ch.basic_ack(delivery_tag=method.delivery_tag)
         print(f"[{WORKER_ID}] completed {task.get('task_id')} type={task_type}")
 
