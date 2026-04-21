@@ -1,0 +1,211 @@
+import hashlib
+import json
+import os
+import tempfile
+import time
+import uuid
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Callable, Iterator
+
+from libs.storage_client.client import upload_file
+
+
+DEFAULT_BUCKET = "mapreduce"
+DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
+DATA_DIR = os.path.join("api_gateway", "data")
+JOB_DIR = os.path.join(DATA_DIR, "jobs")
+
+
+def _get_safe_filename(filename: str) -> str:
+    # Keep only the filename, so a client cannot pass a path like "../../file.txt".
+    return os.path.basename(filename) or "input.txt"
+
+
+class AbstractJobRepository(ABC):
+    """Interface for storing job metadata."""
+
+    @abstractmethod
+    def save(self, job: dict) -> dict:
+        pass
+
+
+class LocalJsonJobRepository(AbstractJobRepository):
+    """Stores job metadata as local JSON files."""
+
+    def __init__(self, job_dir: str | Path = JOB_DIR):
+        self.job_dir = str(job_dir)
+
+    def _ensure_data_dirs(self) -> None:
+        os.makedirs(self.job_dir, exist_ok=True)
+
+    def job_path(self, job_id: str) -> str:
+        return os.path.join(self.job_dir, f"{job_id}.json")
+
+    def write_json_file(self, path: str, payload: dict) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    def save(self, job: dict) -> dict:
+        # A job is metadata for the whole client request, not the input file itself.
+        self._ensure_data_dirs()
+        job["updated_at"] = time.time()
+        self.write_json_file(self.job_path(job["job_id"]), job)
+
+        return job
+
+
+class ChunkUploader:
+    """Splits an input file into line-safe chunks and uploads them to object storage."""
+
+    def __init__(
+        self,
+        bucket: str = DEFAULT_BUCKET,
+        max_chunk_size: int = DEFAULT_CHUNK_SIZE,
+        upload_func: Callable[..., None] = upload_file,
+    ):
+        self.bucket = bucket
+        self.max_chunk_size = max_chunk_size
+        self.upload_func = upload_func
+
+    def iter_text_chunks_by_lines(
+        self,
+        file_path: str | Path,
+        max_chunk_size: int | None = None,
+    ) -> Iterator[bytes]:
+        # NOTE: If one input line is larger than max_chunk_size, it becomes one oversized chunk.
+        active_chunk_size = max_chunk_size or self.max_chunk_size
+        chunk = bytearray()
+
+        with open(file_path, "rb") as file:
+            for line in file:
+                # Yield only before adding the next line, so chunks do not split lines.
+                if chunk and len(chunk) + len(line) > active_chunk_size:
+                    yield bytes(chunk)
+                    chunk.clear()
+
+                chunk.extend(line)
+
+            if chunk:
+                # Send the remaining bytes as the last chunk.
+                yield bytes(chunk)
+
+    def upload_file_chunks(
+        self,
+        job_id: str,
+        file_path: str | Path,
+        bucket: str | None = None,
+        max_chunk_size: int | None = None,
+    ) -> dict:
+        active_bucket = bucket or self.bucket
+        chunks = []
+        total_bytes = 0
+
+        for part_index, chunk in enumerate(
+            self.iter_text_chunks_by_lines(file_path, max_chunk_size=max_chunk_size)
+        ):
+            # This key ties every uploaded chunk to the parent job_id.
+            key = f"jobs/{job_id}/chunks/part_{part_index:05d}.txt"
+            size_bytes = len(chunk)
+
+            self._upload_chunk(chunk, bucket=active_bucket, key=key)
+
+            chunks.append(
+                {
+                    "part_index": part_index,
+                    "key": key,
+                    "size_bytes": size_bytes,
+                    "sha256": hashlib.sha256(chunk).hexdigest(),
+                }
+            )
+
+            total_bytes += size_bytes
+
+        if not chunks:
+            raise ValueError("Input file is empty.")
+
+        # Manifest tells Planner which S3 objects belong to this job.
+        return {
+            "chunk_count": len(chunks),
+            "total_bytes": total_bytes,
+            "chunks": chunks,
+        }
+
+    def _upload_chunk(self, chunk: bytes, bucket: str, key: str) -> None:
+        # Current storage client uploads only local files, so each chunk is staged briefly.
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(chunk)
+            temp_path = temp_file.name
+
+        try:
+            self.upload_func(
+                local_path=temp_path,
+                bucket=bucket,
+                key=key,
+            )
+        finally:
+            os.remove(temp_path)
+
+
+class JobService:
+    """Coordinates chunk upload and job metadata creation."""
+
+    def __init__(
+        self,
+        repository: AbstractJobRepository | None = None,
+        uploader: ChunkUploader | None = None,
+        bucket: str = DEFAULT_BUCKET,
+    ):
+        self.repository = repository or LocalJsonJobRepository()
+        self.uploader = uploader or ChunkUploader(bucket=bucket)
+        self.bucket = bucket
+
+    def create_from_chunks_manifest(
+        self,
+        job_id: str,
+        original_filename: str,
+        bucket: str,
+        manifest: dict,
+    ) -> dict:
+        # This job is the top-level record for one uploaded input file.
+        job = {
+            "job_id": job_id,
+            "status": "uploaded",
+            "original_filename": _get_safe_filename(original_filename),
+            "storage": "minio",
+            "bucket": bucket,
+            "chunk_count": manifest["chunk_count"],
+            "total_bytes": manifest["total_bytes"],
+            "chunks": manifest["chunks"],
+            "submitted_at": time.time(),
+            "completed_at": None,
+            "planner_status": "pending",
+            "planner_message": "Chunks uploaded. Planner integration is not wired yet.",
+        }
+
+        return self.repository.save(job)
+
+    def create_from_file_upload(
+        self,
+        file_path: str | Path,
+        original_filename: str,
+        bucket: str | None = None,
+    ) -> dict:
+        active_bucket = bucket or self.bucket
+
+        # One job_id groups the input file, its chunks, worker tasks, and final result.
+        job_id = str(uuid.uuid4())
+        manifest = self.uploader.upload_file_chunks(
+            job_id=job_id,
+            file_path=file_path,
+            bucket=active_bucket,
+        )
+
+        return self.create_from_chunks_manifest(
+            job_id=job_id,
+            original_filename=original_filename,
+            bucket=active_bucket,
+            manifest=manifest,
+        )
