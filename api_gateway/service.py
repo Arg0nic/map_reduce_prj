@@ -1,14 +1,13 @@
 import hashlib
 import json
 import os
-import tempfile
 import time
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import BinaryIO, Callable, Iterator
 
-from libs.storage_client.client import upload_file
+from libs.storage_client.client import upload_bytes
 
 
 DEFAULT_BUCKET = "mapreduce"
@@ -27,6 +26,10 @@ class AbstractJobRepository(ABC):
 
     @abstractmethod
     def save(self, job: dict) -> dict:
+        pass
+
+    @abstractmethod
+    def load(self, job_id: str) -> dict | None:
         pass
 
 
@@ -48,6 +51,13 @@ class LocalJsonJobRepository(AbstractJobRepository):
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
 
+    def read_json_file(self, path: str) -> dict | None:
+        if not os.path.exists(path):
+            return None
+
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+
     def save(self, job: dict) -> dict:
         # A job is metadata for the whole client request, not the input file itself.
         self._ensure_data_dirs()
@@ -55,6 +65,11 @@ class LocalJsonJobRepository(AbstractJobRepository):
         self.write_json_file(self.job_path(job["job_id"]), job)
 
         return job
+    
+    def load(self, job_id: str) -> dict | None:
+        self._ensure_data_dirs()
+        return self.read_json_file(self.job_path(job_id))
+    
 
 
 class ChunkUploader:
@@ -64,38 +79,37 @@ class ChunkUploader:
         self,
         bucket: str = DEFAULT_BUCKET,
         max_chunk_size: int = DEFAULT_CHUNK_SIZE,
-        upload_func: Callable[..., None] = upload_file,
+        upload_func: Callable[..., None] = upload_bytes,
     ):
         self.bucket = bucket
         self.max_chunk_size = max_chunk_size
         self.upload_func = upload_func
 
-    def iter_text_chunks_by_lines(
+    def iter_text_chunks(
         self,
-        file_path: str | Path,
+        file_obj: BinaryIO,
         max_chunk_size: int | None = None,
     ) -> Iterator[bytes]:
         # NOTE: If one input line is larger than max_chunk_size, it becomes one oversized chunk.
         active_chunk_size = max_chunk_size or self.max_chunk_size
         chunk = bytearray()
 
-        with open(file_path, "rb") as file:
-            for line in file:
-                # Yield only before adding the next line, so chunks do not split lines.
-                if chunk and len(chunk) + len(line) > active_chunk_size:
-                    yield bytes(chunk)
-                    chunk.clear()
-
-                chunk.extend(line)
-
-            if chunk:
-                # Send the remaining bytes as the last chunk.
+        for line in file_obj:
+            # Yield only before adding the next line, so chunks do not split lines.
+            if chunk and len(chunk) + len(line) > active_chunk_size:
                 yield bytes(chunk)
+                chunk.clear()
 
-    def upload_file_chunks(
+            chunk.extend(line)
+
+        if chunk:
+            # Send the remaining bytes as the last chunk.
+            yield bytes(chunk)
+
+    def upload_chunks(
         self,
         job_id: str,
-        file_path: str | Path,
+        file_obj: BinaryIO,
         bucket: str | None = None,
         max_chunk_size: int | None = None,
     ) -> dict:
@@ -104,13 +118,13 @@ class ChunkUploader:
         total_bytes = 0
 
         for part_index, chunk in enumerate(
-            self.iter_text_chunks_by_lines(file_path, max_chunk_size=max_chunk_size)
+            self.iter_text_chunks(file_obj, max_chunk_size=max_chunk_size)
         ):
             # This key ties every uploaded chunk to the parent job_id.
             key = f"jobs/{job_id}/chunks/part_{part_index:05d}.txt"
             size_bytes = len(chunk)
 
-            self._upload_chunk(chunk, bucket=active_bucket, key=key)
+            self.upload_func(chunk, bucket=active_bucket, key=key, content_type="text/plain")
 
             chunks.append(
                 {
@@ -133,20 +147,6 @@ class ChunkUploader:
             "chunks": chunks,
         }
 
-    def _upload_chunk(self, chunk: bytes, bucket: str, key: str) -> None:
-        # Current storage client uploads only local files, so each chunk is staged briefly.
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.write(chunk)
-            temp_path = temp_file.name
-
-        try:
-            self.upload_func(
-                local_path=temp_path,
-                bucket=bucket,
-                key=key,
-            )
-        finally:
-            os.remove(temp_path)
 
 
 class JobService:
@@ -187,25 +187,34 @@ class JobService:
 
         return self.repository.save(job)
 
-    def create_from_file_upload(
+    def create_from_upload(
         self,
-        file_path: str | Path,
-        original_filename: str,
+        file_obj: BinaryIO,
+        original_filename: str | None,
         bucket: str | None = None,
     ) -> dict:
         active_bucket = bucket or self.bucket
 
         # One job_id groups the input file, its chunks, worker tasks, and final result.
         job_id = str(uuid.uuid4())
-        manifest = self.uploader.upload_file_chunks(
+        manifest = self.uploader.upload_chunks(
             job_id=job_id,
-            file_path=file_path,
+            file_obj=file_obj,
             bucket=active_bucket,
         )
 
         return self.create_from_chunks_manifest(
             job_id=job_id,
-            original_filename=original_filename,
+            original_filename=original_filename or "input.txt",
             bucket=active_bucket,
             manifest=manifest,
         )
+    
+    def get_job(self, job_id: str) -> dict | None:
+        return self.repository.load(job_id)
+
+
+# _TODO:
+# 1) integration with DB
+# 2) update storage_client
+# 3) add models
