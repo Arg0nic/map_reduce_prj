@@ -1,21 +1,23 @@
 from fastapi import FastAPI, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
+from api_gateway.schemas import HealthResponse, NotReadyResponse, UploadFileResponse
 from api_gateway.service import JobService
+from libs.models import JobStatus
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="MapReduce API Gateway")
     service = JobService()
 
-    @app.get("/health")
+    @app.get("/health", response_model=HealthResponse)
     def health() -> dict:
         return {
             "status": "ok",
             "service": "api_gateway",
         }
     
-    @app.post("/files", status_code=202)
+    @app.post("/files", status_code=202, response_model=UploadFileResponse)
     async def upload_file(file: UploadFile) -> dict:
         try:
             job = await run_in_threadpool(
@@ -35,8 +37,8 @@ def create_app() -> FastAPI:
         job = service.get_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
-        if job["status"] != "done":
-            return "Not ready yet"
+        if job["status"] != JobStatus.DONE:
+            return NotReadyResponse().model_dump()
         
         return 
 

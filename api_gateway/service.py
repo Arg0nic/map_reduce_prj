@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import BinaryIO, Callable, Iterator
 
+from libs.models import ChunkInfo, Job, JobStatus
 from libs.storage_client.client import upload_bytes
 
 
@@ -126,14 +127,13 @@ class ChunkUploader:
 
             self.upload_func(chunk, bucket=active_bucket, key=key, content_type="text/plain")
 
-            chunks.append(
-                {
-                    "part_index": part_index,
-                    "key": key,
-                    "size_bytes": size_bytes,
-                    "sha256": hashlib.sha256(chunk).hexdigest(),
-                }
+            chunk_info = ChunkInfo(
+                part_index=part_index,
+                key=key,
+                size_bytes=size_bytes,
+                sha256=hashlib.sha256(chunk).hexdigest(),
             )
+            chunks.append(chunk_info.model_dump(mode="json"))
 
             total_bytes += size_bytes
 
@@ -170,22 +170,22 @@ class JobService:
         manifest: dict,
     ) -> dict:
         # This job is the top-level record for one uploaded input file.
-        job = {
-            "job_id": job_id,
-            "status": "uploaded",
-            "original_filename": _get_safe_filename(original_filename),
-            "storage": "minio",
-            "bucket": bucket,
-            "chunk_count": manifest["chunk_count"],
-            "total_bytes": manifest["total_bytes"],
-            "chunks": manifest["chunks"],
-            "submitted_at": time.time(),
-            "completed_at": None,
-            "planner_status": "pending",
-            "planner_message": "Chunks uploaded. Planner integration is not wired yet.",
-        }
+        job = Job(
+            job_id=job_id,
+            status=JobStatus.UPLOADED,
+            original_filename=_get_safe_filename(original_filename),
+            storage="minio",
+            bucket=bucket,
+            chunk_count=manifest["chunk_count"],
+            total_bytes=manifest["total_bytes"],
+            chunks=manifest["chunks"],
+            submitted_at=time.time(),
+            completed_at=None,
+            planner_status="pending",
+            planner_message="Chunks uploaded. Planner integration is not wired yet.",
+        )
 
-        return self.repository.save(job)
+        return self.repository.save(job.model_dump(mode="json"))
 
     def create_from_upload(
         self,
@@ -217,4 +217,3 @@ class JobService:
 # _TODO:
 # 1) integration with DB
 # 2) update storage_client
-# 3) add models
