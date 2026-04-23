@@ -4,8 +4,8 @@ import shutil
 from dataclasses import dataclass
 
 from libs.storage_client.client import download_file, list_objects, upload_file
-from libs.worker.loaders import jsonDataSink, jsonDataSource, txtDataSource
-from libs.worker.worker import (
+from worker.loaders import jsonDataSink, jsonDataSource, txtDataSource
+from worker.worker import (
     MapExecutor,
     ReduceExecutor,
     ShuffleExecutor,
