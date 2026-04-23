@@ -1,5 +1,40 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Local API/storage runtime data
+api_gateway/data/
 storage/
+tests/.tmp/
 
-__pycache__
+# MinIO/local object storage data
+minio-data/
+.minio/
+.minio.sys/
 
-*.orig
+# Test/cache output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
