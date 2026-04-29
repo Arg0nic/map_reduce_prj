@@ -10,9 +10,11 @@ from typing import BinaryIO, Callable, Iterator, Protocol
 from api_gateway.publisher import RabbitJobEventPublisher
 from libs.models import ChunkInfo, Job, JobStatus, JobUploadedEvent
 from libs.storage_client.client import upload_bytes
+from libs.storage_client.config import settings
+from libs.storage_client.paths import chunks_prefix
 
 
-DEFAULT_BUCKET = "mapreduce"
+DEFAULT_BUCKET = settings.DEFAULT_BUCKET or "mapreduce-data"
 DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
 DATA_DIR = os.path.join("api_gateway", "data")
 JOB_DIR = os.path.join(DATA_DIR, "jobs")
@@ -29,7 +31,7 @@ def _get_safe_filename(filename: str) -> str:
 
 
 def _get_chunks_prefix(job_id: str) -> str:
-    return f"jobs/{job_id}/chunks/"
+    return chunks_prefix(job_id)
 
 
 class AbstractJobRepository(ABC):

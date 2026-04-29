@@ -4,6 +4,8 @@ import shutil
 from dataclasses import dataclass
 
 from libs.storage_client.client import download_file, list_objects, upload_file
+from libs.storage_client.config import settings
+from libs.storage_client.paths import reduce_output_key, shuffle_part_key, shuffle_part_prefix
 from worker.loaders import jsonDataSink, jsonDataSource, txtDataSource
 from worker.worker import (
     MapExecutor,
@@ -15,7 +17,7 @@ from worker.worker import (
 )
 
 
-DEFAULT_BUCKET = "mapreduce"
+DEFAULT_BUCKET = settings.DEFAULT_BUCKET or "mapreduce-data"
 
 
 @dataclass(frozen=True)
@@ -42,7 +44,7 @@ def build_task_paths(job_id: str, task_id: str) -> TaskPaths:
 def download_part_files(job_id: str, part_num: int, bucket: str = DEFAULT_BUCKET) -> str:
     # Reduce tasks rebuild their input locally by downloading every shuffle
     # fragment stored for the selected partition.
-    prefix = f"{job_id}/parts/part_{part_num}/"
+    prefix = shuffle_part_prefix(job_id, part_num)
     local_dir = os.path.join("storage", job_id, "parts", f"part_{part_num}")
     os.makedirs(local_dir, exist_ok=True)
 
@@ -175,7 +177,7 @@ def process_reduce_task(task: dict, task_paths: TaskPaths, worker_id: str) -> No
     print("Reducing phase completed.")
     print(f"Reduce output stored in: {task_paths.reduce_output_dir}")
 
-    s3_key = f"{job_id}/reduce_output/reduced_part_{part_num}.jsonl"
+    s3_key = reduce_output_key(job_id, part_num)
     local_reduce_file = os.path.join(task_paths.reduce_output_dir, f"reduced_{part_num}.jsonl")
     upload_file(local_reduce_file, bucket=bucket, key=s3_key)
     print(f"[{worker_id}] uploaded reduce output -> {s3_key}")
@@ -206,7 +208,7 @@ def upload_shuffle_files(
         # Partition index is embedded in the filename produced by the shuffler.
         # If the naming changes, this fallback keeps uploads from crashing.
         part_idx = detect_part_index(filename)
-        s3_key = f"{job_id}/parts/part_{part_idx}/{worker_task_id}_{filename}"
+        s3_key = shuffle_part_key(job_id, part_idx, worker_task_id, filename)
 
         try:
             upload_file(local_path, bucket=bucket, key=s3_key)

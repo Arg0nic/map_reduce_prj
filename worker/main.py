@@ -1,15 +1,20 @@
 import json
+import time
 import uuid
 
 import pika
 
+from libs.models import TaskCompletedEvent
+from libs.storage_client.config import settings
 from worker.heartbeat import start_heartbeat_thread
 from worker.task_processing import build_task_paths, process_map_task, process_reduce_task
 
 
 QUEUE_NAME = "tasks"
 DEAD_QUEUE_NAME = "tasks.dead"
+TASK_COMPLETED_QUEUE = "task.completed"
 WORKER_ID = str(uuid.uuid4())[:8]
+DEFAULT_BUCKET = settings.DEFAULT_BUCKET or "mapreduce-data"
 
 
 RABBIT_PASS = "password"
@@ -19,6 +24,28 @@ RABBIT_PORT = 5672
 
 # number of retries for failed tasks
 MAX_RETRIES = 3
+
+
+def publish_task_completed(ch, task: dict, task_type: str) -> None:
+    event = TaskCompletedEvent(
+        job_id=task["job_id"],
+        task_id=task["task_id"],
+        task_type=task_type,
+        worker_id=WORKER_ID,
+        bucket=task.get("bucket", DEFAULT_BUCKET),
+        completed_at=time.time(),
+        part_num=task.get("part_num"),
+    )
+    ch.basic_publish(
+        exchange="",
+        routing_key=TASK_COMPLETED_QUEUE,
+        body=event.model_dump_json(),
+        properties=pika.BasicProperties(
+            delivery_mode=2,
+            content_type="application/json",
+        ),
+    )
+    print(f"[{WORKER_ID}] notified planner about completed {task_type} task {task['task_id']}")
 
 
 def callback(ch, method, properties, body):
@@ -49,6 +76,7 @@ def callback(ch, method, properties, body):
             process_reduce_task(task, task_paths, worker_id=WORKER_ID)
         else:
             raise ValueError(f"Unknown task type: {task_type}")
+        publish_task_completed(ch, task, task_type)
         ch.basic_ack(delivery_tag=method.delivery_tag)
         print(f"[{WORKER_ID}] completed {task.get('task_id')} type={task_type}")
 
@@ -91,6 +119,7 @@ def main():
 
     ch.queue_declare(queue=QUEUE_NAME, durable=True)
     ch.queue_declare(queue=DEAD_QUEUE_NAME, durable=True)
+    ch.queue_declare(queue=TASK_COMPLETED_QUEUE, durable=True)
     ch.basic_qos(prefetch_count=1)
     ch.basic_consume(queue=QUEUE_NAME, on_message_callback=callback, auto_ack=False)
 
