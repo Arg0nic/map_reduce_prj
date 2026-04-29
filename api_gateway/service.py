@@ -5,9 +5,10 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterator
+from typing import BinaryIO, Callable, Iterator, Protocol
 
-from libs.models import ChunkInfo, Job, JobStatus
+from api_gateway.publisher import RabbitJobEventPublisher
+from libs.models import ChunkInfo, Job, JobStatus, JobUploadedEvent
 from libs.storage_client.client import upload_bytes
 
 
@@ -17,9 +18,18 @@ DATA_DIR = os.path.join("api_gateway", "data")
 JOB_DIR = os.path.join(DATA_DIR, "jobs")
 
 
+class JobEventPublisher(Protocol):
+    def publish_job_uploaded(self, event: JobUploadedEvent) -> None:
+        pass
+
+
 def _get_safe_filename(filename: str) -> str:
     # Keep only the filename, so a client cannot pass a path like "../../file.txt".
     return os.path.basename(filename) or "input.txt"
+
+
+def _get_chunks_prefix(job_id: str) -> str:
+    return f"jobs/{job_id}/chunks/"
 
 
 class AbstractJobRepository(ABC):
@@ -122,7 +132,7 @@ class ChunkUploader:
             self.iter_text_chunks(file_obj, max_chunk_size=max_chunk_size)
         ):
             # This key ties every uploaded chunk to the parent job_id.
-            key = f"jobs/{job_id}/chunks/part_{part_index:05d}.txt"
+            key = f"{_get_chunks_prefix(job_id)}part_{part_index:05d}.txt"
             size_bytes = len(chunk)
 
             self.upload_func(chunk, bucket=active_bucket, key=key, content_type="text/plain")
@@ -156,10 +166,12 @@ class JobService:
         self,
         repository: AbstractJobRepository | None = None,
         uploader: ChunkUploader | None = None,
+        event_publisher: JobEventPublisher | None = None,
         bucket: str = DEFAULT_BUCKET,
     ):
         self.repository = repository or LocalJsonJobRepository()
         self.uploader = uploader or ChunkUploader(bucket=bucket)
+        self.event_publisher = event_publisher or RabbitJobEventPublisher()
         self.bucket = bucket
 
     def create_from_chunks_manifest(
@@ -203,12 +215,22 @@ class JobService:
             bucket=active_bucket,
         )
 
-        return self.create_from_chunks_manifest(
+        job = self.create_from_chunks_manifest(
             job_id=job_id,
             original_filename=original_filename or "input.txt",
             bucket=active_bucket,
             manifest=manifest,
         )
+
+        event = JobUploadedEvent(
+            job_id=job_id,
+            bucket=active_bucket,
+            chunks_prefix=_get_chunks_prefix(job_id),
+            created_at=job["submitted_at"],
+        )
+        self.event_publisher.publish_job_uploaded(event)
+
+        return job
     
     def get_job(self, job_id: str) -> dict | None:
         return self.repository.load(job_id)

@@ -17,6 +17,13 @@ class ChunkInfo(BaseModel):
     sha256: str
 
 
+class JobUploadedEvent(BaseModel):
+    job_id: str
+    bucket: str = "mapreduce"
+    chunks_prefix: str
+    created_at: float
+
+
 class Job(BaseModel):
     job_id: str
     status: JobStatus

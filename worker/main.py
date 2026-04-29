@@ -37,7 +37,7 @@ def callback(ch, method, properties, body):
     attempts = int(headers.get("x-attempts", 0))
 
     task_paths = build_task_paths(
-        task.get("main_task_id") or "unknown",
+        task.get("job_id") or "unknown",
         task.get("task_id") or "unknown",
     )
 

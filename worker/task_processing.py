@@ -28,9 +28,9 @@ class TaskPaths:
     reduce_output_dir: str
 
 
-def build_task_paths(main_task_id: str, task_id: str) -> TaskPaths:
+def build_task_paths(job_id: str, task_id: str) -> TaskPaths:
     # Every worker task gets its own isolated local directory tree.
-    task_dir = os.path.join("storage", main_task_id, task_id)
+    task_dir = os.path.join("storage", job_id, task_id)
     return TaskPaths(
         task_dir=task_dir,
         spill_files_dir=os.path.join(task_dir, "spill_files"),
@@ -39,11 +39,11 @@ def build_task_paths(main_task_id: str, task_id: str) -> TaskPaths:
     )
 
 
-def download_part_files(main_task_id: str, part_num: int, bucket: str = DEFAULT_BUCKET) -> str:
+def download_part_files(job_id: str, part_num: int, bucket: str = DEFAULT_BUCKET) -> str:
     # Reduce tasks rebuild their input locally by downloading every shuffle
     # fragment stored for the selected partition.
-    prefix = f"{main_task_id}/parts/part_{part_num}/"
-    local_dir = os.path.join("storage", main_task_id, "parts", f"part_{part_num}")
+    prefix = f"{job_id}/parts/part_{part_num}/"
+    local_dir = os.path.join("storage", job_id, "parts", f"part_{part_num}")
     os.makedirs(local_dir, exist_ok=True)
 
     objects = list_objects(bucket, prefix)
@@ -117,10 +117,10 @@ def cleanup_directory(dirpath: str) -> None:
 
 
 def process_map_task(task: dict, task_paths: TaskPaths, worker_id: str) -> None:
-    main_task_id = task.get("main_task_id")
+    job_id = task.get("job_id")
     worker_task_id = task.get("task_id")
-    if not main_task_id:
-        raise ValueError("Missing main_task_id in task")
+    if not job_id:
+        raise ValueError("Missing job_id in task")
     if not worker_task_id:
         raise ValueError("Missing task_id in task")
 
@@ -139,7 +139,7 @@ def process_map_task(task: dict, task_paths: TaskPaths, worker_id: str) -> None:
     # Upload shuffle outputs only after local processing succeeds, so retries
     # re-run the whole task instead of publishing partial data.
     upload_shuffle_files(
-        main_task_id=main_task_id,
+        job_id=job_id,
         worker_task_id=worker_task_id,
         shuffle_dir=task_paths.shuffle_files_dir,
         task_dir=task_paths.task_dir,
@@ -149,9 +149,9 @@ def process_map_task(task: dict, task_paths: TaskPaths, worker_id: str) -> None:
 
 
 def process_reduce_task(task: dict, task_paths: TaskPaths, worker_id: str) -> None:
-    main_task_id = task.get("main_task_id")
-    if not main_task_id:
-        raise ValueError("Missing main_task_id in task")
+    job_id = task.get("job_id")
+    if not job_id:
+        raise ValueError("Missing job_id in task")
 
     part_num = int(task.get("address"))
     bucket = task.get("bucket", DEFAULT_BUCKET)
@@ -159,7 +159,7 @@ def process_reduce_task(task: dict, task_paths: TaskPaths, worker_id: str) -> No
     print("Starting reducing phase...")
     # The reduce worker aggregates all shuffle fragments that belong to the
     # same partition number, regardless of which map worker produced them.
-    part_dir = download_part_files(main_task_id, part_num, bucket=bucket)
+    part_dir = download_part_files(job_id, part_num, bucket=bucket)
     print(f"Downloaded part files to {part_dir}")
 
     os.makedirs(task_paths.reduce_output_dir, exist_ok=True)
@@ -175,14 +175,14 @@ def process_reduce_task(task: dict, task_paths: TaskPaths, worker_id: str) -> No
     print("Reducing phase completed.")
     print(f"Reduce output stored in: {task_paths.reduce_output_dir}")
 
-    s3_key = f"{main_task_id}/reduce_output/reduced_part_{part_num}.jsonl"
+    s3_key = f"{job_id}/reduce_output/reduced_part_{part_num}.jsonl"
     local_reduce_file = os.path.join(task_paths.reduce_output_dir, f"reduced_{part_num}.jsonl")
     upload_file(local_reduce_file, bucket=bucket, key=s3_key)
     print(f"[{worker_id}] uploaded reduce output -> {s3_key}")
 
 
 def upload_shuffle_files(
-    main_task_id: str,
+    job_id: str,
     worker_task_id: str,
     shuffle_dir: str,
     task_dir: str,
@@ -206,7 +206,7 @@ def upload_shuffle_files(
         # Partition index is embedded in the filename produced by the shuffler.
         # If the naming changes, this fallback keeps uploads from crashing.
         part_idx = detect_part_index(filename)
-        s3_key = f"{main_task_id}/parts/part_{part_idx}/{worker_task_id}_{filename}"
+        s3_key = f"{job_id}/parts/part_{part_idx}/{worker_task_id}_{filename}"
 
         try:
             upload_file(local_path, bucket=bucket, key=s3_key)

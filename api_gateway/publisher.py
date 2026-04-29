@@ -1,0 +1,60 @@
+import pika
+
+from libs.models import JobUploadedEvent
+
+
+QUEUE_JOBS = "jobs"
+
+RABBIT_PASS = "password"
+RABBIT_LOGIN = "admin"
+RABBIT_HOST = "localhost"
+RABBIT_PORT = 5672
+
+
+class RabbitJobEventPublisher:
+    """Publishes API Gateway job events to RabbitMQ."""
+
+    def __init__(
+        self,
+        queue_name: str = QUEUE_JOBS,
+        rabbit_login: str = RABBIT_LOGIN,
+        rabbit_pass: str = RABBIT_PASS,
+        rabbit_host: str = RABBIT_HOST,
+        rabbit_port: int = RABBIT_PORT,
+    ):
+        self.queue_name = queue_name
+        self.rabbit_login = rabbit_login
+        self.rabbit_pass = rabbit_pass
+        self.rabbit_host = rabbit_host
+        self.rabbit_port = rabbit_port
+
+    def publish_job_uploaded(self, event: JobUploadedEvent) -> None:
+        credentials = pika.PlainCredentials(self.rabbit_login, self.rabbit_pass)
+        params = pika.ConnectionParameters(
+            host=self.rabbit_host,
+            port=self.rabbit_port,
+            virtual_host="/",
+            credentials=credentials,
+        )
+
+        try:
+            conn = pika.BlockingConnection(params)
+        except pika.exceptions.AMQPError as exc:
+            raise RuntimeError("Failed to connect to RabbitMQ.") from exc
+
+        try:
+            ch = conn.channel()
+            ch.queue_declare(queue=self.queue_name, durable=True)
+            ch.basic_publish(
+                exchange="",
+                routing_key=self.queue_name,
+                body=event.model_dump_json(),
+                properties=pika.BasicProperties(
+                    delivery_mode=2,
+                    content_type="application/json",
+                ),
+            )
+        except pika.exceptions.AMQPError as exc:
+            raise RuntimeError("Failed to publish job event to RabbitMQ.") from exc
+        finally:
+            conn.close()
