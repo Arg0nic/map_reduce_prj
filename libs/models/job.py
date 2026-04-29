@@ -2,6 +2,11 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from libs.storage_client.config import settings
+
+
+DEFAULT_BUCKET = settings.DEFAULT_BUCKET or "mapreduce-data"
+
 
 class JobStatus(StrEnum):
     UPLOADED = "uploaded"
@@ -19,7 +24,7 @@ class ChunkInfo(BaseModel):
 
 class JobUploadedEvent(BaseModel):
     job_id: str
-    bucket: str = "mapreduce"
+    bucket: str = DEFAULT_BUCKET
     chunks_prefix: str
     created_at: float
 
