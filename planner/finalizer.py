@@ -11,6 +11,12 @@ JOB_REPOSITORY = LocalJsonJobRepository()
 
 
 def collect_reduce_results(bucket: str, job_id: str) -> dict[str, int]:
+    '''
+    Collects reduce JSONL output files into one sorted word-count dictionary.
+
+    Reduce workers write JSONL files. Planner reads every line as a small
+    dictionary and folds them into one sorted word-count result.
+    '''
     prefix = reduce_output_prefix(job_id)
     keys = sorted(key for key in list_objects(bucket, prefix) if key.endswith(".jsonl"))
     if not keys:
@@ -31,6 +37,12 @@ def collect_reduce_results(bucket: str, job_id: str) -> dict[str, int]:
 
 
 def finalize_job(job_id: str, bucket: str) -> str:
+    '''
+    Builds the final result object and marks the job as done.
+
+    Finalization creates the client-facing result object and updates job
+    metadata so the API can return it from /jobs/{job_id}/result.
+    '''
     result = collect_reduce_results(bucket, job_id)
     final_result_key = result_key(job_id)
     result_bytes = json.dumps(result, ensure_ascii=False, sort_keys=True).encode("utf-8")
