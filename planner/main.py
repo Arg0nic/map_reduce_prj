@@ -7,11 +7,11 @@ from dataclasses import dataclass, field
 import pika
 from pydantic import ValidationError
 
-from libs.job_repository import LocalJsonJobRepository
-from libs.models import JobStatus, JobUploadedEvent, TaskCompletedEvent, TaskType, WorkerTask
-from libs.storage_client.client import list_objects, read_object_bytes, upload_bytes
+from libs.models import JobUploadedEvent, TaskCompletedEvent, TaskType, WorkerTask
+from libs.storage_client.client import list_objects
 from libs.storage_client.config import settings
-from libs.storage_client.paths import reduce_output_prefix, result_key, shuffle_parts_prefix
+from libs.storage_client.paths import shuffle_parts_prefix
+from planner.finalizer import finalize_job
 
 
 QUEUE_TASKS = "tasks"
@@ -24,7 +24,6 @@ RABBIT_LOGIN = "admin"
 RABBIT_HOST = "localhost"
 RABBIT_PORT = 5672
 DEFAULT_BUCKET = settings.DEFAULT_BUCKET or "mapreduce-data"
-JOB_REPOSITORY = LocalJsonJobRepository()
 
 
 @dataclass
@@ -126,54 +125,6 @@ def start_reduce_phase(ch, job_id: str, state: JobPlanState) -> None:
     state.reduce_task_ids = {task.task_id for task in tasks}
     state.reduce_started = True
     print(f"[Planner] planned {len(tasks)} reduce tasks for job {job_id}")
-
-
-def collect_reduce_results(bucket: str, job_id: str) -> dict[str, int]:
-    prefix = reduce_output_prefix(job_id)
-    keys = sorted(key for key in list_objects(bucket, prefix) if key.endswith(".jsonl"))
-    if not keys:
-        raise FileNotFoundError(f"No reduce output files found in {bucket}/{prefix}")
-
-    result = {}
-    for key in keys:
-        content = read_object_bytes(bucket, key).decode("utf-8")
-        for line in content.splitlines():
-            if not line.strip():
-                continue
-
-            record = json.loads(line)
-            for word, count in record.items():
-                result[word] = result.get(word, 0) + int(count)
-
-    return dict(sorted(result.items(), key=lambda item: item[0]))
-
-
-def finalize_job(job_id: str, bucket: str) -> str:
-    result = collect_reduce_results(bucket, job_id)
-    final_result_key = result_key(job_id)
-    result_bytes = json.dumps(result, ensure_ascii=False, sort_keys=True).encode("utf-8")
-
-    upload_bytes(
-        result_bytes,
-        bucket=bucket,
-        key=final_result_key,
-        content_type="application/json",
-    )
-
-    updated_job = JOB_REPOSITORY.update(
-        job_id,
-        {
-            "status": JobStatus.DONE.value,
-            "completed_at": time.time(),
-            "result_key": final_result_key,
-            "planner_status": "done",
-            "planner_message": "Job completed.",
-        },
-    )
-    if updated_job is None:
-        raise FileNotFoundError(f"Job metadata not found for job {job_id}")
-
-    return final_result_key
 
 
 def handle_map_completed(ch, event: TaskCompletedEvent) -> None:
