@@ -1,9 +1,12 @@
+import json
+
 from fastapi import FastAPI, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
-from api_gateway.schemas import HealthResponse, NotReadyResponse, UploadFileResponse
+from api_gateway.schemas import HealthResponse, JobResultResponse, NotReadyResponse, UploadFileResponse
 from api_gateway.service import JobService
 from libs.models import JobStatus
+from libs.storage_client.client import read_object_bytes
 
 
 def create_app() -> FastAPI:
@@ -39,10 +42,22 @@ def create_app() -> FastAPI:
         job = service.get_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
-        if job["status"] != JobStatus.DONE:
+        if job["status"] != JobStatus.DONE.value:
             return NotReadyResponse().model_dump()
-        
-        return 
+
+        result_key = job.get("result_key")
+        if not result_key:
+            raise HTTPException(status_code=500, detail="Job is done but result key is missing.")
+
+        try:
+            result_bytes = read_object_bytes(job["bucket"], result_key)
+            result = json.loads(result_bytes.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=500, detail="Job result is not valid JSON.") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Failed to load job result.") from exc
+
+        return JobResultResponse(result=result).model_dump()
 
 
     return app

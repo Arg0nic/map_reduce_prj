@@ -59,6 +59,14 @@ def upload_bytes(data: bytes, bucket: str, key: str, content_type: str = "applic
         ContentType=content_type,
     )
 
+
+def read_object_bytes(bucket: str, key: str) -> bytes:
+    """Read an object from S3-compatible storage into memory."""
+    s3 = get_s3_client()
+    response = s3.get_object(Bucket=bucket, Key=key)
+    return response["Body"].read()
+
+
 def download_file(bucket: str, key: str, local_path: str) -> None:
     """Download an object from S3-compatible storage to a local file.
 

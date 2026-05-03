@@ -24,3 +24,11 @@ def reduce_output_prefix(job_id: str) -> str:
 
 def reduce_output_key(job_id: str, part_num: int) -> str:
     return f"{reduce_output_prefix(job_id)}reduced_part_{part_num}.jsonl"
+
+
+def result_prefix(job_id: str) -> str:
+    return f"{job_prefix(job_id)}result/"
+
+
+def result_key(job_id: str) -> str:
+    return f"{result_prefix(job_id)}result.json"
