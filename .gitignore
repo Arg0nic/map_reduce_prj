@@ -15,6 +15,7 @@ env/
 
 # Local API/storage runtime data
 api_gateway/data/
+data/
 storage/
 tests/.tmp/
 
