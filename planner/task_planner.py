@@ -16,7 +16,7 @@ DEFAULT_BUCKET = settings.DEFAULT_BUCKET or "mapreduce-data"
 
 def send_task(
     ch,
-    task_type: TaskType | str,
+    task_type: TaskType,
     address: str,
     job_id: str,
     task_id: str | None = None,
