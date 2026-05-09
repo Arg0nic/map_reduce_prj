@@ -46,20 +46,7 @@ class Reducer(ABC):
             Aggregates intermediate records into one reduced dictionary.
         '''
         pass
-
-
-class HealthCheck(ABC):
-    '''
-        Interface for health check.
-    '''
-
-    @abstractmethod
-    def is_healthy(self) -> bool:
-        '''
-            Returns whether the worker component is ready to process tasks.
-        '''
-        pass
-
+        
 
 class WordCountMapper(Mapper):
     '''
