@@ -5,6 +5,7 @@ import pika
 from pydantic import ValidationError
 
 from libs.models import JobUploadedEvent, TaskCompletedEvent
+from libs.task_repository import create_task_repository
 from planner.service import PlannerService
 from planner.task_planner import QUEUE_TASKS
 
@@ -19,7 +20,14 @@ RABBIT_HOST = "localhost"
 RABBIT_PORT = 5672
 
 
-PLANNER_SERVICE = PlannerService()
+PLANNER_SERVICE = None
+
+
+def get_planner_service() -> PlannerService:
+    global PLANNER_SERVICE
+    if PLANNER_SERVICE is None:
+        PLANNER_SERVICE = PlannerService(task_repository=create_task_repository())
+    return PLANNER_SERVICE
 
 
 def heartbeat_callback(ch, method, properties, body):
@@ -64,7 +72,7 @@ def job_callback(ch, method, properties, body):
         return
 
     try:
-        PLANNER_SERVICE.handle_job_uploaded(ch, event)
+        get_planner_service().handle_job_uploaded(ch, event)
     except Exception as exc:
         print(f"[Planner] failed to create tasks for job {event.job_id}: {exc}")
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
@@ -89,7 +97,7 @@ def task_completed_callback(ch, method, properties, body):
         return
 
     try:
-        PLANNER_SERVICE.handle_task_completed(ch, event)
+        get_planner_service().handle_task_completed(ch, event)
     except Exception as exc:
         print(f"[Planner] failed to handle task completion for job {event.job_id}: {exc}")
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)

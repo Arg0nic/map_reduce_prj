@@ -1,4 +1,5 @@
 from libs.models import JobUploadedEvent, TaskCompletedEvent, TaskType
+from libs.task_repository import AbstractTaskRepository
 from planner.finalizer import finalize_job
 from planner.state import JobPlanState
 from planner.task_planner import create_map_tasks_for_job, create_reduce_tasks_for_job
@@ -12,7 +13,11 @@ class PlannerService:
     complete, and finalizes the job after all reduce tasks complete.
     '''
 
-    def __init__(self, job_states: dict[str, JobPlanState] | None = None):
+    def __init__(
+        self,
+        job_states: dict[str, JobPlanState] | None = None,
+        task_repository: AbstractTaskRepository | None = None,
+    ):
         '''
         Creates a planner service.
 
@@ -20,6 +25,15 @@ class PlannerService:
         the planner's view of active jobs.
         '''
         self.job_states = job_states if job_states is not None else {}
+        self.task_repository = task_repository
+
+    def record_tasks_published(self, tasks) -> None:
+        if self.task_repository is not None:
+            self.task_repository.record_tasks_published(tasks)
+
+    def record_task_completed(self, event: TaskCompletedEvent) -> None:
+        if self.task_repository is not None:
+            self.task_repository.mark_task_completed(event)
 
     def handle_job_uploaded(self, ch, event: JobUploadedEvent) -> None:
         '''
@@ -28,6 +42,7 @@ class PlannerService:
         A new uploaded job starts with one map task per uploaded chunk.
         '''
         tasks = create_map_tasks_for_job(ch, event)
+        self.record_tasks_published(tasks)
         print(f"[Planner] planned {len(tasks)} map tasks for job {event.job_id}")
         self.job_states[event.job_id] = JobPlanState(
             bucket=event.bucket,
@@ -42,6 +57,7 @@ class PlannerService:
         shuffle output, so reduce workers can read complete partition data.
         '''
         tasks = create_reduce_tasks_for_job(ch, job_id, state.bucket)
+        self.record_tasks_published(tasks)
         state.reduce_task_ids = {task.task_id for task in tasks}
         state.reduce_started = True
         print(f"[Planner] planned {len(tasks)} reduce tasks for job {job_id}")
@@ -65,6 +81,7 @@ class PlannerService:
         if event.task_id in state.completed_map_task_ids:
             print(f"[Planner] duplicate map completion {event.task_id} for job {event.job_id}")
         else:
+            self.record_task_completed(event)
             state.completed_map_task_ids.add(event.task_id)
             print(
                 f"[Planner] map completed for job {event.job_id}: "
@@ -94,6 +111,7 @@ class PlannerService:
         if event.task_id in state.completed_reduce_task_ids:
             print(f"[Planner] duplicate reduce completion {event.task_id} for job {event.job_id}")
         else:
+            self.record_task_completed(event)
             state.completed_reduce_task_ids.add(event.task_id)
             print(
                 f"[Planner] reduce completed for job {event.job_id}: "

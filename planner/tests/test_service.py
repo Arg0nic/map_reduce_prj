@@ -8,6 +8,24 @@ from planner.service import PlannerService
 from planner.state import JobPlanState
 
 
+class RecordingTaskRepository:
+    def __init__(self):
+        self.published = []
+        self.completed = []
+
+    def record_tasks_published(self, tasks):
+        self.published.append(list(tasks))
+
+    def mark_task_completed(self, event):
+        self.completed.append(event)
+
+    def list_tasks_for_job(self, job_id: str) -> list[dict]:
+        return []
+
+    def list_events_for_job(self, job_id: str) -> list[dict]:
+        return []
+
+
 def make_completed_event(
     task_id: str,
     task_type: TaskType,
@@ -49,6 +67,28 @@ def test_handle_job_uploaded_creates_initial_job_state(
     )
 
 
+def test_handle_job_uploaded_records_published_map_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_repository = RecordingTaskRepository()
+    service = PlannerService(task_repository=task_repository)
+    event = JobUploadedEvent(
+        job_id="job-1",
+        bucket="bucket-1",
+        chunks_prefix="jobs/job-1/chunks/",
+        created_at=123.45,
+    )
+    tasks = [
+        SimpleNamespace(task_id="map-1"),
+        SimpleNamespace(task_id="map-2"),
+    ]
+    monkeypatch.setattr(planner_service, "create_map_tasks_for_job", lambda ch, received_event: tasks)
+
+    service.handle_job_uploaded(ch=object(), event=event)
+
+    assert task_repository.published == [tasks]
+
+
 def test_start_reduce_phase_records_reduce_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -64,6 +104,23 @@ def test_start_reduce_phase_records_reduce_tasks(
 
     assert state.reduce_task_ids == {"reduce-0", "reduce-1"}
     assert state.reduce_started is True
+
+
+def test_start_reduce_phase_records_published_reduce_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_repository = RecordingTaskRepository()
+    state = JobPlanState(bucket="bucket-1", map_task_ids={"map-1"})
+    service = PlannerService({"job-1": state}, task_repository=task_repository)
+    tasks = [
+        SimpleNamespace(task_id="reduce-0"),
+        SimpleNamespace(task_id="reduce-1"),
+    ]
+    monkeypatch.setattr(planner_service, "create_reduce_tasks_for_job", lambda ch, job_id, bucket: tasks)
+
+    service.start_reduce_phase(ch=object(), job_id="job-1", state=state)
+
+    assert task_repository.published == [tasks]
 
 
 def test_map_completion_starts_reduce_after_all_known_maps_complete() -> None:
@@ -84,6 +141,19 @@ def test_map_completion_starts_reduce_after_all_known_maps_complete() -> None:
 
     assert state.completed_map_task_ids == {"map-1", "map-2"}
     assert calls == [(channel, "job-1", state)]
+
+
+def test_map_completion_records_completed_task_once() -> None:
+    task_repository = RecordingTaskRepository()
+    state = JobPlanState(bucket="bucket-1", map_task_ids={"map-1"})
+    service = PlannerService({"job-1": state}, task_repository=task_repository)
+    service.start_reduce_phase = lambda ch, job_id, received_state: None  # type: ignore[method-assign]
+    event = make_completed_event("map-1", TaskType.MAP)
+
+    service.handle_map_completed(object(), event)
+    service.handle_map_completed(object(), event)
+
+    assert task_repository.completed == [event]
 
 
 def test_map_completion_ignores_unknown_job_or_task() -> None:
@@ -122,6 +192,29 @@ def test_reduce_completion_finalizes_after_all_known_reduces_complete(
     assert state.completed_reduce_task_ids == {"reduce-0", "reduce-1"}
     assert state.done is True
     assert finalizations == [("job-1", "bucket-1")]
+
+
+def test_reduce_completion_records_completed_task_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_repository = RecordingTaskRepository()
+    state = JobPlanState(
+        bucket="bucket-1",
+        map_task_ids={"map-1"},
+        reduce_task_ids={"reduce-0"},
+    )
+    service = PlannerService({"job-1": state}, task_repository=task_repository)
+    monkeypatch.setattr(
+        planner_service,
+        "finalize_job",
+        lambda job_id, bucket: "jobs/job-1/result/result.json",
+    )
+    event = make_completed_event("reduce-0", TaskType.REDUCE, part_num=0)
+
+    service.handle_reduce_completed(event)
+    service.handle_reduce_completed(event)
+
+    assert task_repository.completed == [event]
 
 
 def test_reduce_completion_ignores_unknown_job_or_task(

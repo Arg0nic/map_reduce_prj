@@ -1,0 +1,189 @@
+import time
+import uuid
+
+from sqlalchemy import Column, Float, Integer, MetaData, String, Table, create_engine, select
+from sqlalchemy.dialects.postgresql import JSONB, insert
+
+from libs.models import TaskCompletedEvent, WorkerTask
+
+from .base import AbstractTaskRepository
+
+
+TASK_STATUS_PUBLISHED = "published"
+TASK_STATUS_COMPLETED = "completed"
+TASK_EVENT_PUBLISHED = "published"
+TASK_EVENT_COMPLETED = "completed"
+
+
+def _create_task_tables():
+    metadata = MetaData()
+    tasks = Table(
+        "tasks",
+        metadata,
+        Column("task_id", String, primary_key=True),
+        Column("job_id", String),
+        Column("type", String),
+        Column("status", String),
+        Column("address", String),
+        Column("storage", String),
+        Column("bucket", String),
+        Column("part_num", Integer),
+        Column("created_at", Float),
+        Column("published_at", Float),
+        Column("completed_at", Float),
+        Column("worker_id", String),
+        Column("attempts", Integer),
+        Column("error_message", String),
+        Column("updated_at", Float),
+    )
+    task_events = Table(
+        "task_events",
+        metadata,
+        Column("event_id", String, primary_key=True),
+        Column("job_id", String),
+        Column("task_id", String),
+        Column("event_type", String),
+        Column("task_type", String),
+        Column("worker_id", String),
+        Column("message", String),
+        Column("payload", JSONB),
+        Column("created_at", Float),
+    )
+    return tasks, task_events
+
+
+class PostgresTaskRepository(AbstractTaskRepository):
+    """Stores planner-visible worker task lifecycle metadata in PostgreSQL."""
+
+    def __init__(self, database_url: str):
+        self.database_url = database_url
+        self.engine = create_engine(database_url)
+        self.tasks, self.task_events = _create_task_tables()
+        self._check_connection()
+
+    def _check_connection(self) -> None:
+        try:
+            with self.engine.connect() as connection:
+                connection.exec_driver_sql("SELECT 1")
+        except Exception as exc:
+            raise RuntimeError("Failed to connect to PostgreSQL.") from exc
+
+    def _event_payload(
+        self,
+        event_type: str,
+        job_id: str,
+        task_id: str,
+        task_type: str,
+        payload: dict,
+        worker_id: str | None = None,
+        message: str | None = None,
+        created_at: float | None = None,
+    ) -> dict:
+        return {
+            "event_id": str(uuid.uuid4()),
+            "job_id": job_id,
+            "task_id": task_id,
+            "event_type": event_type,
+            "task_type": task_type,
+            "worker_id": worker_id,
+            "message": message,
+            "payload": payload,
+            "created_at": created_at or time.time(),
+        }
+
+    def record_tasks_published(self, tasks: list[WorkerTask]) -> None:
+        if not tasks:
+            return
+
+        published_at = time.time()
+        with self.engine.begin() as connection:
+            for task in tasks:
+                task_payload = task.model_dump(mode="json")
+                row = {
+                    **task_payload,
+                    "type": task_payload["type"],
+                    "status": TASK_STATUS_PUBLISHED,
+                    "published_at": published_at,
+                    "completed_at": None,
+                    "worker_id": None,
+                    "attempts": 0,
+                    "error_message": None,
+                    "updated_at": published_at,
+                }
+                statement = insert(self.tasks).values(**row)
+                update_values = {
+                    key: getattr(statement.excluded, key)
+                    for key in row
+                    if key != "task_id"
+                }
+                connection.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=[self.tasks.c.task_id],
+                        set_=update_values,
+                    )
+                )
+                connection.execute(
+                    insert(self.task_events).values(
+                        **self._event_payload(
+                            event_type=TASK_EVENT_PUBLISHED,
+                            job_id=task.job_id,
+                            task_id=task.task_id,
+                            task_type=task.type.value,
+                            payload=task_payload,
+                            message="Task published to worker queue.",
+                            created_at=published_at,
+                        )
+                    )
+                )
+
+    def mark_task_completed(self, event: TaskCompletedEvent) -> None:
+        payload = event.model_dump(mode="json")
+        updated_at = time.time()
+        statement = (
+            self.tasks.update()
+            .where(self.tasks.c.task_id == event.task_id)
+            .values(
+                status=TASK_STATUS_COMPLETED,
+                completed_at=event.completed_at,
+                worker_id=event.worker_id,
+                part_num=event.part_num,
+                updated_at=updated_at,
+            )
+        )
+
+        with self.engine.begin() as connection:
+            result = connection.execute(statement)
+            if result.rowcount == 0:
+                raise KeyError(f"Task metadata not found for task {event.task_id}")
+            connection.execute(
+                insert(self.task_events).values(
+                    **self._event_payload(
+                        event_type=TASK_EVENT_COMPLETED,
+                        job_id=event.job_id,
+                        task_id=event.task_id,
+                        task_type=event.task_type.value,
+                        worker_id=event.worker_id,
+                        payload=payload,
+                        message="Task completed by worker.",
+                        created_at=event.completed_at,
+                    )
+                )
+            )
+
+    def list_tasks_for_job(self, job_id: str) -> list[dict]:
+        statement = (
+            select(self.tasks)
+            .where(self.tasks.c.job_id == job_id)
+            .order_by(self.tasks.c.created_at, self.tasks.c.task_id)
+        )
+        with self.engine.connect() as connection:
+            return [dict(row) for row in connection.execute(statement).mappings()]
+
+    def list_events_for_job(self, job_id: str) -> list[dict]:
+        statement = (
+            select(self.task_events)
+            .where(self.task_events.c.job_id == job_id)
+            .order_by(self.task_events.c.created_at, self.task_events.c.event_id)
+        )
+        with self.engine.connect() as connection:
+            return [dict(row) for row in connection.execute(statement).mappings()]
