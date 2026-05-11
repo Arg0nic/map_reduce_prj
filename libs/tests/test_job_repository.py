@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-import libs.job_repository as job_repository
+import libs.job_repository.local_json as local_json_repository
 from libs.job_repository import LocalJsonJobRepository
 
 
@@ -10,7 +10,7 @@ def test_local_json_repository_saves_and_loads_job(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    monkeypatch.setattr(job_repository.time, "time", lambda: 123.45)
+    monkeypatch.setattr(local_json_repository.time, "time", lambda: 123.45)
     repository = LocalJsonJobRepository(job_dir=tmp_path / "jobs")
 
     job = repository.save(
@@ -37,7 +37,7 @@ def test_local_json_repository_updates_existing_job(
     tmp_path,
 ) -> None:
     times = iter([100.0, 200.0])
-    monkeypatch.setattr(job_repository.time, "time", lambda: next(times))
+    monkeypatch.setattr(local_json_repository.time, "time", lambda: next(times))
     repository = LocalJsonJobRepository(job_dir=tmp_path / "jobs")
     repository.save({"job_id": "job-1", "status": "uploaded", "chunk_count": 2})
 
