@@ -1,13 +1,20 @@
 import json
 import time
 
-from libs.job_repository import LocalJsonJobRepository
+from libs.job_repository import create_job_repository
 from libs.models import JobStatus
 from libs.storage_client.client import list_objects, read_object_bytes, upload_bytes
 from libs.storage_client.paths import reduce_output_prefix, result_key
 
 
-JOB_REPOSITORY = LocalJsonJobRepository()
+JOB_REPOSITORY = None
+
+
+def get_job_repository():
+    global JOB_REPOSITORY
+    if JOB_REPOSITORY is None:
+        JOB_REPOSITORY = create_job_repository()
+    return JOB_REPOSITORY
 
 
 def collect_reduce_results(bucket: str, job_id: str) -> dict[str, int]:
@@ -54,7 +61,7 @@ def finalize_job(job_id: str, bucket: str) -> str:
         content_type="application/json",
     )
 
-    updated_job = JOB_REPOSITORY.update(
+    updated_job = get_job_repository().update(
         job_id,
         {
             "status": JobStatus.DONE.value,

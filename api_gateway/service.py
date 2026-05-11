@@ -5,7 +5,7 @@ import uuid
 from typing import BinaryIO, Callable, Iterator, Protocol
 
 from api_gateway.publisher import RabbitJobEventPublisher
-from libs.job_repository import AbstractJobRepository, LocalJsonJobRepository
+from libs.job_repository import AbstractJobRepository, create_job_repository
 from libs.models import ChunkInfo, Job, JobStatus, JobUploadedEvent
 from libs.storage_client.client import upload_bytes
 from libs.storage_client.config import settings
@@ -116,7 +116,7 @@ class JobService:
         event_publisher: JobEventPublisher | None = None,
         bucket: str = DEFAULT_BUCKET,
     ):
-        self.repository = repository or LocalJsonJobRepository()
+        self.repository = repository or create_job_repository()
         self.uploader = uploader or ChunkUploader(bucket=bucket)
         self.event_publisher = event_publisher or RabbitJobEventPublisher()
         self.bucket = bucket
