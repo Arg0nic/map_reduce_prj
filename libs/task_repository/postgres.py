@@ -11,8 +11,10 @@ from .base import AbstractTaskRepository
 
 TASK_STATUS_PUBLISHED = "published"
 TASK_STATUS_COMPLETED = "completed"
+TASK_STATUS_FAILED = "failed"
 TASK_EVENT_PUBLISHED = "published"
 TASK_EVENT_COMPLETED = "completed"
+TASK_EVENT_DEAD_LETTERED = "dead_lettered"
 
 
 def _create_task_tables():
@@ -166,6 +168,46 @@ class PostgresTaskRepository(AbstractTaskRepository):
                         payload=payload,
                         message="Task completed by worker.",
                         created_at=event.completed_at,
+                    )
+                )
+            )
+
+    def mark_task_failed(self, task: dict, message: str | None = None) -> None:
+        task_id = task.get("task_id")
+        job_id = task.get("job_id")
+        task_type = task.get("type")
+        if not task_id:
+            raise ValueError("Dead task message is missing task_id.")
+        if not job_id:
+            raise ValueError("Dead task message is missing job_id.")
+        if not task_type:
+            raise ValueError("Dead task message is missing type.")
+
+        updated_at = time.time()
+        statement = (
+            self.tasks.update()
+            .where(self.tasks.c.task_id == task_id)
+            .values(
+                status=TASK_STATUS_FAILED,
+                error_message=message,
+                updated_at=updated_at,
+            )
+        )
+
+        with self.engine.begin() as connection:
+            result = connection.execute(statement)
+            if result.rowcount == 0:
+                raise KeyError(f"Task metadata not found for task {task_id}")
+            connection.execute(
+                insert(self.task_events).values(
+                    **self._event_payload(
+                        event_type=TASK_EVENT_DEAD_LETTERED,
+                        job_id=job_id,
+                        task_id=task_id,
+                        task_type=task_type,
+                        payload=task,
+                        message=message,
+                        created_at=updated_at,
                     )
                 )
             )

@@ -186,3 +186,90 @@ def test_task_completed_callback_nacks_when_handling_fails(
 
     assert channel.acked == []
     assert channel.nacked == [("delivery-1", True)]
+
+
+def test_task_dead_callback_delegates_valid_dead_task_and_acks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = FakeChannel()
+    calls = []
+
+    class FakePlannerService:
+        def handle_task_dead(self, task):
+            calls.append(task)
+
+    monkeypatch.setattr(planner_main, "PLANNER_SERVICE", FakePlannerService())
+
+    planner_main.task_dead_callback(
+        channel,
+        make_method(),
+        properties=None,
+        body=json.dumps(
+            {
+                "job_id": "job-1",
+                "task_id": "map-1",
+                "type": "map",
+                "address": "jobs/job-1/chunks/chunk_0.txt",
+                "storage": "minio",
+                "bucket": "bucket-1",
+                "created_at": 123.45,
+            }
+        ),
+    )
+
+    assert calls == [
+        {
+            "job_id": "job-1",
+            "task_id": "map-1",
+            "type": "map",
+            "address": "jobs/job-1/chunks/chunk_0.txt",
+            "storage": "minio",
+            "bucket": "bucket-1",
+            "created_at": 123.45,
+            "part_num": None,
+        }
+    ]
+    assert channel.acked == ["delivery-1"]
+    assert channel.nacked == []
+
+
+def test_task_dead_callback_acks_invalid_dead_task() -> None:
+    channel = FakeChannel()
+
+    planner_main.task_dead_callback(channel, make_method(), properties=None, body=b"not-json")
+
+    assert channel.acked == ["delivery-1"]
+    assert channel.nacked == []
+
+
+def test_task_dead_callback_nacks_when_handling_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = FakeChannel()
+
+    class FailingPlannerService:
+        def handle_task_dead(self, task):
+            raise RuntimeError("handling failed")
+
+    monkeypatch.setattr(planner_main, "PLANNER_SERVICE", FailingPlannerService())
+
+    planner_main.task_dead_callback(
+        channel,
+        make_method(),
+        properties=None,
+        body=json.dumps(
+            {
+                "job_id": "job-1",
+                "task_id": "reduce-1",
+                "type": "reduce",
+                "address": "jobs/job-1/shuffle/part_1/",
+                "storage": "minio",
+                "bucket": "bucket-1",
+                "created_at": 123.45,
+                "part_num": 1,
+            }
+        ),
+    )
+
+    assert channel.acked == []
+    assert channel.nacked == [("delivery-1", True)]

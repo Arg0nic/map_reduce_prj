@@ -12,6 +12,7 @@ class RecordingTaskRepository:
     def __init__(self):
         self.published = []
         self.completed = []
+        self.failed = []
 
     def record_tasks_published(self, tasks):
         self.published.append(list(tasks))
@@ -19,11 +20,29 @@ class RecordingTaskRepository:
     def mark_task_completed(self, event):
         self.completed.append(event)
 
+    def mark_task_failed(self, task, message: str | None = None):
+        self.failed.append((task, message))
+
     def list_tasks_for_job(self, job_id: str) -> list[dict]:
         return []
 
     def list_events_for_job(self, job_id: str) -> list[dict]:
         return []
+
+
+class RecordingJobRepository:
+    def __init__(self):
+        self.updated = []
+
+    def save(self, job: dict) -> dict:
+        return job
+
+    def load(self, job_id: str) -> dict | None:
+        return None
+
+    def update(self, job_id: str, patch: dict) -> dict | None:
+        self.updated.append((job_id, patch))
+        return {"job_id": job_id, **patch}
 
 
 def make_completed_event(
@@ -247,3 +266,54 @@ def test_handle_task_completed_routes_by_task_type(monkeypatch: pytest.MonkeyPat
         ("map", channel, "map-1"),
         ("reduce", "reduce-1"),
     ]
+
+
+def test_handle_task_dead_records_failed_task_and_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_repository = RecordingTaskRepository()
+    job_repository = RecordingJobRepository()
+    state = JobPlanState(bucket="bucket-1", map_task_ids={"map-1"})
+    service = PlannerService(
+        {"job-1": state},
+        task_repository=task_repository,
+        job_repository=job_repository,
+    )
+    monkeypatch.setattr(planner_service.time, "time", lambda: 500.0)
+    task = {
+        "job_id": "job-1",
+        "task_id": "map-1",
+        "type": "map",
+    }
+
+    service.handle_task_dead(task)
+
+    message = "Task map-1 reached dead queue after worker retries."
+    assert task_repository.failed == [(task, message)]
+    assert job_repository.updated == [
+        (
+            "job-1",
+            {
+                "status": "failed",
+                "completed_at": 500.0,
+                "planner_status": "failed",
+                "planner_message": message,
+            },
+        )
+    ]
+    assert state.done is True
+
+
+@pytest.mark.parametrize(
+    "task",
+    [
+        {"task_id": "map-1", "type": "map"},
+        {"job_id": "job-1", "type": "map"},
+        {"job_id": "job-1", "task_id": "map-1"},
+    ],
+)
+def test_handle_task_dead_rejects_invalid_dead_task(task: dict) -> None:
+    service = PlannerService()
+
+    with pytest.raises(ValueError):
+        service.handle_task_dead(task)

@@ -1,4 +1,7 @@
-from libs.models import JobUploadedEvent, TaskCompletedEvent, TaskType
+import time
+
+from libs.job_repository import AbstractJobRepository
+from libs.models import JobStatus, JobUploadedEvent, TaskCompletedEvent, TaskType
 from libs.task_repository import AbstractTaskRepository
 from planner.finalizer import finalize_job
 from planner.state import JobPlanState
@@ -17,6 +20,7 @@ class PlannerService:
         self,
         job_states: dict[str, JobPlanState] | None = None,
         task_repository: AbstractTaskRepository | None = None,
+        job_repository: AbstractJobRepository | None = None,
     ):
         '''
         Creates a planner service.
@@ -26,6 +30,7 @@ class PlannerService:
         '''
         self.job_states = job_states if job_states is not None else {}
         self.task_repository = task_repository
+        self.job_repository = job_repository
 
     def record_tasks_published(self, tasks) -> None:
         if self.task_repository is not None:
@@ -34,6 +39,22 @@ class PlannerService:
     def record_task_completed(self, event: TaskCompletedEvent) -> None:
         if self.task_repository is not None:
             self.task_repository.mark_task_completed(event)
+
+    def record_task_failed(self, task: dict, message: str) -> None:
+        if self.task_repository is not None:
+            self.task_repository.mark_task_failed(task, message=message)
+
+    def mark_job_failed(self, job_id: str, message: str) -> None:
+        if self.job_repository is not None:
+            self.job_repository.update(
+                job_id,
+                {
+                    "status": JobStatus.FAILED.value,
+                    "completed_at": time.time(),
+                    "planner_status": "failed",
+                    "planner_message": message,
+                },
+            )
 
     def handle_job_uploaded(self, ch, event: JobUploadedEvent) -> None:
         '''
@@ -136,3 +157,27 @@ class PlannerService:
             self.handle_reduce_completed(event)
         else:
             print(f"[Planner] unknown completed task type {event.task_type}, ack and skip")
+
+    def handle_task_dead(self, task: dict) -> None:
+        '''
+        Records a task that exhausted worker retries and reached the dead queue.
+        '''
+        job_id = task.get("job_id")
+        task_id = task.get("task_id")
+        task_type = task.get("type")
+        if not job_id:
+            raise ValueError("Dead task message is missing job_id.")
+        if not task_id:
+            raise ValueError("Dead task message is missing task_id.")
+        if not task_type:
+            raise ValueError("Dead task message is missing type.")
+
+        message = f"Task {task_id} reached dead queue after worker retries."
+        self.record_task_failed(task, message)
+        self.mark_job_failed(job_id, message)
+
+        state = self.job_states.get(job_id)
+        if state is not None:
+            state.done = True
+
+        print(f"[Planner] marked job {job_id} failed because task {task_id} reached dead queue")

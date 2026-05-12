@@ -15,6 +15,10 @@ class AbstractTaskRepository(ABC):
         pass
 
     @abstractmethod
+    def mark_task_failed(self, task: dict, message: str | None = None) -> None:
+        pass
+
+    @abstractmethod
     def list_tasks_for_job(self, job_id: str) -> list[dict]:
         pass
 

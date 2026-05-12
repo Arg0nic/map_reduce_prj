@@ -4,7 +4,8 @@ import time
 import pika
 from pydantic import ValidationError
 
-from libs.models import JobUploadedEvent, TaskCompletedEvent
+from libs.job_repository import create_job_repository
+from libs.models import JobUploadedEvent, TaskCompletedEvent, WorkerTask
 from libs.task_repository import create_task_repository
 from planner.service import PlannerService
 from planner.task_planner import QUEUE_TASKS
@@ -13,6 +14,7 @@ from planner.task_planner import QUEUE_TASKS
 QUEUE_JOBS = "jobs"
 HEARTBEAT_QUEUE = "worker.heartbeat"
 TASK_COMPLETED_QUEUE = "task.completed"
+DEAD_TASK_QUEUE = "tasks.dead"
 
 RABBIT_PASS = "password"
 RABBIT_LOGIN = "admin"
@@ -26,7 +28,10 @@ PLANNER_SERVICE = None
 def get_planner_service() -> PlannerService:
     global PLANNER_SERVICE
     if PLANNER_SERVICE is None:
-        PLANNER_SERVICE = PlannerService(task_repository=create_task_repository())
+        PLANNER_SERVICE = PlannerService(
+            task_repository=create_task_repository(),
+            job_repository=create_job_repository(),
+        )
     return PLANNER_SERVICE
 
 
@@ -106,6 +111,28 @@ def task_completed_callback(ch, method, properties, body):
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
+def task_dead_callback(ch, method, properties, body):
+    '''
+    Handles tasks that exhausted worker retries and reached the dead queue.
+    '''
+    try:
+        payload = json.loads(body)
+        task = WorkerTask.model_validate(payload).model_dump(mode="json")
+    except (json.JSONDecodeError, TypeError, ValidationError):
+        print("[Planner] invalid dead task message, ack and skip")
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        return
+
+    try:
+        get_planner_service().handle_task_dead(task)
+    except Exception as exc:
+        print(f"[Planner] failed to handle dead task {task.get('task_id')}: {exc}")
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+        return
+
+    ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
 def main():
     '''
     Starts the planner RabbitMQ consumer loop.
@@ -126,11 +153,13 @@ def main():
     ch.queue_declare(queue=HEARTBEAT_QUEUE, durable=False)
     ch.queue_declare(queue=QUEUE_JOBS, durable=True)
     ch.queue_declare(queue=TASK_COMPLETED_QUEUE, durable=True)
+    ch.queue_declare(queue=DEAD_TASK_QUEUE, durable=True)
 
     ch.basic_consume(queue=QUEUE_JOBS, on_message_callback=job_callback, auto_ack=False)
     ch.basic_consume(queue=HEARTBEAT_QUEUE, on_message_callback=heartbeat_callback, auto_ack=False)
     ch.basic_consume(queue=TASK_COMPLETED_QUEUE, on_message_callback=task_completed_callback, auto_ack=False)
-    print("[Planner] listening for jobs, task completions, and worker heartbeats. Press CTRL+C to stop.")
+    ch.basic_consume(queue=DEAD_TASK_QUEUE, on_message_callback=task_dead_callback, auto_ack=False)
+    print("[Planner] listening for jobs, task completions, dead tasks, and worker heartbeats. Press CTRL+C to stop.")
 
     try:
         ch.start_consuming()
