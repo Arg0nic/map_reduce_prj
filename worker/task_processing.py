@@ -46,6 +46,7 @@ def download_part_files(job_id: str, part_num: int, bucket: str = DEFAULT_BUCKET
     # fragment stored for the selected partition.
     prefix = shuffle_part_prefix(job_id, part_num)
     local_dir = os.path.join("storage", job_id, "parts", f"part_{part_num}")
+    cleanup_directory(local_dir)
     os.makedirs(local_dir, exist_ok=True)
 
     objects = list_objects(bucket, prefix)
@@ -118,6 +119,11 @@ def cleanup_directory(dirpath: str) -> None:
         shutil.rmtree(dirpath)
 
 
+def prepare_task_workspace(task_paths: TaskPaths) -> None:
+    cleanup_directory(task_paths.task_dir)
+    os.makedirs(task_paths.task_dir, exist_ok=True)
+
+
 def process_map_task(task: dict, task_paths: TaskPaths, worker_id: str) -> None:
     job_id = task.get("job_id")
     worker_task_id = task.get("task_id")
@@ -126,6 +132,7 @@ def process_map_task(task: dict, task_paths: TaskPaths, worker_id: str) -> None:
     if not worker_task_id:
         raise ValueError("Missing task_id in task")
 
+    prepare_task_workspace(task_paths)
     input_file = download_input_file(task, task_paths)
 
     # Map writes spill files first, then shuffle repartitions them into the
@@ -158,6 +165,7 @@ def process_reduce_task(task: dict, task_paths: TaskPaths, worker_id: str) -> No
     part_num = int(task.get("address"))
     bucket = task.get("bucket", DEFAULT_BUCKET)
 
+    prepare_task_workspace(task_paths)
     print("Starting reducing phase...")
     # The reduce worker aggregates all shuffle fragments that belong to the
     # same partition number, regardless of which map worker produced them.

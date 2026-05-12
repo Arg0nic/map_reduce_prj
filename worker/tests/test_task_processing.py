@@ -104,6 +104,18 @@ def test_download_input_file_rejects_missing_local_file(tmp_path: Path) -> None:
         )
 
 
+def test_prepare_task_workspace_removes_stale_files(tmp_path: Path) -> None:
+    paths = make_task_paths(tmp_path)
+    stale_file = Path(paths.task_dir) / "shuffle_files" / "old.jsonl"
+    stale_file.parent.mkdir(parents=True)
+    stale_file.write_text("stale", encoding="utf-8")
+
+    task_processing.prepare_task_workspace(paths)
+
+    assert Path(paths.task_dir).is_dir()
+    assert not stale_file.exists()
+
+
 def test_download_part_files_downloads_all_objects(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -141,6 +153,26 @@ def test_download_part_files_downloads_all_objects(
             os.path.join(result, "map-2_part_2_0.jsonl"),
         ),
     ]
+
+
+def test_download_part_files_removes_stale_part_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    part_dir = Path("storage") / "job-1" / "parts" / "part_2"
+    stale_file = part_dir / "old.jsonl"
+    stale_file.parent.mkdir(parents=True)
+    stale_file.write_text("stale", encoding="utf-8")
+
+    monkeypatch.setattr(task_processing, "list_objects", lambda bucket, prefix: ["jobs/job-1/parts/part_2/new.jsonl"])
+    monkeypatch.setattr(task_processing, "download_file", lambda bucket, key, local_path: Path(local_path).write_text("new", encoding="utf-8"))
+
+    result = task_processing.download_part_files("job-1", 2, bucket="bucket-1")
+
+    assert result == os.path.join("storage", "job-1", "parts", "part_2")
+    assert not stale_file.exists()
+    assert (part_dir / "new.jsonl").read_text(encoding="utf-8") == "new"
 
 
 def test_download_part_files_rejects_empty_storage_prefix(
@@ -296,6 +328,7 @@ def test_process_map_task_runs_map_shuffle_cleanup_and_upload(
     task_processing.process_map_task(task, paths, worker_id="worker-1")
 
     assert calls == [
+        ("cleanup", paths.task_dir),
         ("download", task, paths),
         ("map", "input.txt", paths.spill_files_dir),
         ("shuffle", paths.spill_files_dir, paths.shuffle_files_dir),
