@@ -24,7 +24,7 @@ class Mapper(ABC):
 
     @staticmethod
     @abstractmethod
-    def do_map(data: Any) -> Iterable[tuple[Any, Any]]:
+    def do_map(line: Any) -> Iterable[tuple[Any, Any]]:
         '''
             Converts one input item into an iterable of mapped key-value pairs.
         '''

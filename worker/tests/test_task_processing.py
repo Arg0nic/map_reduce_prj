@@ -36,11 +36,15 @@ def test_build_task_paths_returns_isolated_task_directories() -> None:
         ("part-3-0.jsonl", 3),
         ("worker_task_part_12_0.jsonl", 12),
         ("7_extra.jsonl", 7),
-        ("unknown.jsonl", "unknown"),
     ],
 )
-def test_detect_part_index(filename: str, expected: int | str) -> None:
+def test_detect_part_index(filename: str, expected: int) -> None:
     assert task_processing.detect_part_index(filename) == expected
+
+
+def test_detect_part_index_rejects_unknown_filename() -> None:
+    with pytest.raises(ValueError, match="Could not detect partition index"):
+        task_processing.detect_part_index("unknown.jsonl")
 
 
 def test_download_input_file_returns_existing_local_file(tmp_path: Path) -> None:
@@ -399,3 +403,8 @@ def test_process_reduce_task_downloads_reduces_and_uploads_output(
 def test_process_reduce_task_requires_job_id(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Missing job_id"):
         task_processing.process_reduce_task({"address": "0"}, make_task_paths(tmp_path), worker_id="worker-1")
+
+
+def test_process_reduce_task_requires_address(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Missing address"):
+        task_processing.process_reduce_task({"job_id": "job-1"}, make_task_paths(tmp_path), worker_id="worker-1")

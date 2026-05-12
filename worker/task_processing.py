@@ -162,7 +162,10 @@ def process_reduce_task(task: dict, task_paths: TaskPaths, worker_id: str) -> No
     if not job_id:
         raise ValueError("Missing job_id in task")
 
-    part_num = int(task.get("address"))
+    address = task.get("address")
+    if address is None:
+        raise ValueError("Missing address in reduce task")
+    part_num = int(address)
     bucket = task.get("bucket", DEFAULT_BUCKET)
 
     prepare_task_workspace(task_paths)
@@ -243,7 +246,7 @@ def upload_shuffle_files(
         print(f"[{worker_id}] nothing to cleanup at {task_dir}")
 
 
-def detect_part_index(filename: str):
+def detect_part_index(filename: str) -> int:
     # Support both explicit "part_3" style names and simple numeric prefixes.
     match = re.search(r"part[_\-]?(\d+)", filename, flags=re.IGNORECASE)
     if match:
@@ -253,4 +256,4 @@ def detect_part_index(filename: str):
     if fallback:
         return int(fallback.group(1))
 
-    return "unknown"
+    raise ValueError(f"Could not detect partition index from filename: {filename}")

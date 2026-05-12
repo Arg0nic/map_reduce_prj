@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 import worker.main as worker_main
+from libs.models import TaskType
 
 
 class FakeChannel:
@@ -50,7 +51,7 @@ def test_publish_task_completed_publishes_planner_event(monkeypatch: pytest.Monk
             "bucket": "bucket-1",
             "part_num": 2,
         },
-        "reduce",
+        TaskType.REDUCE,
     )
 
     assert len(channel.published) == 1
@@ -137,7 +138,7 @@ def test_callback_processes_task_publishes_completion_and_acks(
     assert calls == [
         ("paths", "job-1", f"{task_type}-1"),
         ("process", task, task_paths, "worker-1"),
-        ("completed", channel, task, task_type),
+        ("completed", channel, task, TaskType(task_type)),
     ]
     assert channel.acked == ["delivery-1"]
     assert channel.published == []

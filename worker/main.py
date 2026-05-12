@@ -4,7 +4,7 @@ import uuid
 
 import pika
 
-from libs.models import TaskCompletedEvent
+from libs.models import TaskCompletedEvent, TaskType
 from libs.storage_client.config import settings
 from worker.heartbeat import start_heartbeat_thread
 from worker.task_processing import build_task_paths, process_map_task, process_reduce_task
@@ -26,7 +26,7 @@ RABBIT_PORT = 5672
 MAX_RETRIES = 3
 
 
-def publish_task_completed(ch, task: dict, task_type: str) -> None:
+def publish_task_completed(ch, task: dict, task_type: TaskType) -> None:
     event = TaskCompletedEvent(
         job_id=task["job_id"],
         task_id=task["task_id"],
@@ -69,10 +69,10 @@ def callback(ch, method, properties, body):
     )
 
     try:
-        task_type = task.get("type")
-        if task_type == "map":
+        task_type = TaskType(task.get("type"))
+        if task_type == TaskType.MAP:
             process_map_task(task, task_paths, worker_id=WORKER_ID)
-        elif task_type == "reduce":
+        elif task_type == TaskType.REDUCE:
             process_reduce_task(task, task_paths, worker_id=WORKER_ID)
         else:
             raise ValueError(f"Unknown task type: {task_type}")
