@@ -2,9 +2,10 @@ import json
 import time
 
 from libs.job_repository import create_job_repository
-from libs.models import JobStatus
-from libs.storage_client.client import list_objects, read_object_bytes, upload_bytes
-from libs.storage_client.paths import reduce_output_prefix, result_key
+from libs.models import JobStatus, TaskType
+from libs.storage_client.client import read_object_bytes, upload_bytes
+from libs.storage_client.paths import result_key, task_manifests_prefix
+from libs.task_outputs import list_task_output_manifests
 
 
 JOB_REPOSITORY = None
@@ -19,15 +20,16 @@ def get_job_repository():
 
 def collect_reduce_results(bucket: str, job_id: str) -> dict[str, int]:
     '''
-    Collects reduce JSONL output files into one sorted word-count dictionary.
+    Collects committed reduce JSONL output files into one sorted word-count dictionary.
 
-    Reduce workers write JSONL files. Planner reads every line as a small
-    dictionary and folds them into one sorted word-count result.
+    Reduce workers publish output manifests after successful upload. Planner
+    reads only files referenced by those manifests and ignores raw partial
+    uploads without a manifest.
     '''
-    prefix = reduce_output_prefix(job_id)
-    keys = sorted(key for key in list_objects(bucket, prefix) if key.endswith(".jsonl"))
+    manifests = list_task_output_manifests(bucket, job_id, task_type=TaskType.REDUCE)
+    keys = sorted(output.key for manifest in manifests for output in manifest.outputs)
     if not keys:
-        raise FileNotFoundError(f"No reduce output files found in {bucket}/{prefix}")
+        raise FileNotFoundError(f"No reduce output manifests found in {bucket}/{task_manifests_prefix(job_id)}")
 
     result = {}
     for key in keys:

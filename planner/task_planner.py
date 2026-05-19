@@ -1,4 +1,3 @@
-import re
 import time
 import uuid
 
@@ -7,7 +6,8 @@ import pika
 from libs.models import JobUploadedEvent, TaskType, WorkerTask
 from libs.storage_client.client import list_objects
 from libs.storage_client.config import settings
-from libs.storage_client.paths import shuffle_parts_prefix
+from libs.storage_client.paths import task_manifests_prefix
+from libs.task_outputs import list_task_output_manifests
 
 
 QUEUE_TASKS = "tasks"
@@ -49,19 +49,17 @@ def send_task(
 
 def list_reduce_part_numbers(bucket: str, job_id: str) -> list[int]:
     '''
-    Returns reduce partition numbers discovered from shuffle output objects.
+    Returns reduce partition numbers discovered from committed map outputs.
 
-    Reduce partitions are discovered from uploaded shuffle objects instead of
-    hardcoding the partition count in planner.
+    Reduce partitions are discovered from map task manifests instead of
+    scanning raw shuffle files, so partial uploads without a manifest are
+    ignored.
     '''
-    prefix = shuffle_parts_prefix(job_id)
-    keys = list_objects(bucket, prefix)
     part_numbers = set()
 
-    for key in keys:
-        match = re.match(rf"{re.escape(prefix)}part_(\d+)/", key)
-        if match:
-            part_numbers.add(int(match.group(1)))
+    for manifest in list_task_output_manifests(bucket, job_id, task_type=TaskType.MAP):
+        for output in manifest.outputs:
+            part_numbers.add(output.part_num)
 
     return sorted(part_numbers)
 
@@ -100,7 +98,7 @@ def create_reduce_tasks_for_job(ch, job_id: str, bucket: str) -> list[WorkerTask
     '''
     part_numbers = list_reduce_part_numbers(bucket, job_id)
     if not part_numbers:
-        raise FileNotFoundError(f"No reduce parts found in {bucket}/{shuffle_parts_prefix(job_id)}")
+        raise FileNotFoundError(f"No reduce parts found in {bucket}/{task_manifests_prefix(job_id)}")
 
     tasks = []
     for part_num in part_numbers:

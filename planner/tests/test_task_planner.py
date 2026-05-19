@@ -3,8 +3,7 @@ import json
 import pytest
 
 import planner.task_planner as task_planner
-from libs.models import JobUploadedEvent, TaskType
-from libs.storage_client.paths import shuffle_parts_prefix
+from libs.models import JobUploadedEvent, TaskOutputFile, TaskOutputManifest, TaskType
 
 
 class FakeChannel:
@@ -58,17 +57,31 @@ def test_send_task_publishes_durable_worker_task(monkeypatch: pytest.MonkeyPatch
 def test_list_reduce_part_numbers_discovers_sorted_partition_numbers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prefix = shuffle_parts_prefix("job-1")
-
     monkeypatch.setattr(
         task_planner,
-        "list_objects",
-        lambda bucket, requested_prefix: [
-            f"{prefix}part_2/map-1_part_2_0.jsonl",
-            f"{prefix}part_0/map-1_part_0_0.jsonl",
-            f"{prefix}part_2/map-2_part_2_0.jsonl",
-            f"{prefix}not_a_part/file.jsonl",
-            "jobs/other/parts/part_9/file.jsonl",
+        "list_task_output_manifests",
+        lambda bucket, job_id, task_type: [
+            TaskOutputManifest(
+                job_id="job-1",
+                task_id="map-1",
+                task_type=TaskType.MAP,
+                bucket="bucket-1",
+                created_at=123.45,
+                outputs=[
+                    TaskOutputFile(part_num=2, key="jobs/job-1/task_outputs/map-1/part_2_0.jsonl"),
+                    TaskOutputFile(part_num=0, key="jobs/job-1/task_outputs/map-1/part_0_0.jsonl"),
+                ],
+            ),
+            TaskOutputManifest(
+                job_id="job-1",
+                task_id="map-2",
+                task_type=TaskType.MAP,
+                bucket="bucket-1",
+                created_at=123.45,
+                outputs=[
+                    TaskOutputFile(part_num=2, key="jobs/job-1/task_outputs/map-2/part_2_0.jsonl"),
+                ],
+            ),
         ],
     )
 

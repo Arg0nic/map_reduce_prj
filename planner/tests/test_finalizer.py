@@ -3,25 +3,36 @@ import json
 import pytest
 
 import planner.finalizer as finalizer
-from libs.models import JobStatus
-from libs.storage_client.paths import reduce_output_prefix, result_key
+from libs.models import JobStatus, TaskOutputFile, TaskOutputManifest, TaskType
+from libs.storage_client.paths import result_key, task_output_key
+
+
+def make_reduce_manifest(task_id: str, part_num: int, key: str) -> TaskOutputManifest:
+    return TaskOutputManifest(
+        job_id="job-1",
+        task_id=task_id,
+        task_type=TaskType.REDUCE,
+        bucket="bucket-1",
+        created_at=123.45,
+        outputs=[TaskOutputFile(part_num=part_num, key=key)],
+    )
 
 
 def test_collect_reduce_results_merges_jsonl_reduce_outputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prefix = reduce_output_prefix("job-1")
+    key_1 = task_output_key("job-1", "reduce-1", "reduced_1.jsonl")
+    key_0 = task_output_key("job-1", "reduce-0", "reduced_0.jsonl")
     objects = {
-        f"{prefix}reduced_part_1.jsonl": b'{"beta": "2"}\n{"alpha": 1}\n\n',
-        f"{prefix}reduced_part_0.jsonl": b'{"alpha": 3}\n{"gamma": 4}\n',
+        key_1: b'{"beta": "2"}\n{"alpha": 1}\n\n',
+        key_0: b'{"alpha": 3}\n{"gamma": 4}\n',
     }
     monkeypatch.setattr(
         finalizer,
-        "list_objects",
-        lambda bucket, requested_prefix: [
-            f"{prefix}ignored.txt",
-            f"{prefix}reduced_part_1.jsonl",
-            f"{prefix}reduced_part_0.jsonl",
+        "list_task_output_manifests",
+        lambda bucket, job_id, task_type: [
+            make_reduce_manifest("reduce-1", 1, key_1),
+            make_reduce_manifest("reduce-0", 0, key_0),
         ],
     )
     monkeypatch.setattr(finalizer, "read_object_bytes", lambda bucket, key: objects[key])
@@ -39,18 +50,21 @@ def test_collect_reduce_results_merges_jsonl_reduce_outputs(
 def test_collect_reduce_results_rejects_missing_reduce_outputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(finalizer, "list_objects", lambda bucket, prefix: [])
+    monkeypatch.setattr(finalizer, "list_task_output_manifests", lambda bucket, job_id, task_type: [])
 
-    with pytest.raises(FileNotFoundError, match="No reduce output files"):
+    with pytest.raises(FileNotFoundError, match="No reduce output manifests"):
         finalizer.collect_reduce_results("bucket-1", "job-1")
 
 
 def test_collect_reduce_results_propagates_invalid_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prefix = reduce_output_prefix("job-1")
-    key = f"{prefix}reduced_part_0.jsonl"
-    monkeypatch.setattr(finalizer, "list_objects", lambda bucket, requested_prefix: [key])
+    key = task_output_key("job-1", "reduce-0", "reduced_0.jsonl")
+    monkeypatch.setattr(
+        finalizer,
+        "list_task_output_manifests",
+        lambda bucket, job_id, task_type: [make_reduce_manifest("reduce-0", 0, key)],
+    )
     monkeypatch.setattr(finalizer, "read_object_bytes", lambda bucket, requested_key: b"not-json\n")
 
     with pytest.raises(json.JSONDecodeError):

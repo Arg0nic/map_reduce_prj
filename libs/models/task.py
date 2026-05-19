@@ -32,3 +32,17 @@ class TaskCompletedEvent(BaseModel):
     bucket: str = DEFAULT_BUCKET
     completed_at: float
     part_num: int | None = Field(default=None, ge=0)
+
+
+class TaskOutputFile(BaseModel):
+    part_num: int = Field(ge=0)
+    key: str
+
+
+class TaskOutputManifest(BaseModel):
+    job_id: str
+    task_id: str
+    task_type: TaskType
+    bucket: str = DEFAULT_BUCKET
+    created_at: float
+    outputs: list[TaskOutputFile]

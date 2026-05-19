@@ -9,6 +9,8 @@ from libs.models import (
     JobStatus,
     JobUploadedEvent,
     TaskCompletedEvent,
+    TaskOutputFile,
+    TaskOutputManifest,
     TaskType,
     WorkerTask,
 )
@@ -49,6 +51,36 @@ def test_task_completed_event_accepts_reduce_part_number() -> None:
 
     assert event.task_type == TaskType.REDUCE
     assert event.part_num == 2
+
+
+def test_task_output_manifest_serializes_task_outputs() -> None:
+    manifest = TaskOutputManifest(
+        job_id="job-1",
+        task_id="map-1",
+        task_type=TaskType.MAP,
+        bucket="bucket-1",
+        created_at=123.45,
+        outputs=[
+            TaskOutputFile(
+                part_num=0,
+                key="jobs/job-1/task_outputs/map-1/part_0_0.jsonl",
+            )
+        ],
+    )
+
+    assert json.loads(manifest.model_dump_json()) == {
+        "job_id": "job-1",
+        "task_id": "map-1",
+        "task_type": "map",
+        "bucket": "bucket-1",
+        "created_at": 123.45,
+        "outputs": [
+            {
+                "part_num": 0,
+                "key": "jobs/job-1/task_outputs/map-1/part_0_0.jsonl",
+            }
+        ],
+    }
 
 
 def test_job_uploaded_event_preserves_chunk_prefix() -> None:
@@ -110,6 +142,7 @@ def test_job_model_contains_chunk_metadata_and_defaults() -> None:
             completed_at=123.45,
             part_num=-1,
         ),
+        lambda: TaskOutputFile(part_num=-1, key="key"),
         lambda: Job(
             job_id="job-1",
             status=JobStatus.UPLOADED,

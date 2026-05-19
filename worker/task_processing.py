@@ -1,11 +1,14 @@
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass
 
-from libs.storage_client.client import download_file, list_objects, upload_file
+from libs.models import TaskOutputFile, TaskOutputManifest, TaskType
+from libs.storage_client.client import download_file, upload_file
 from libs.storage_client.config import settings
-from libs.storage_client.paths import reduce_output_key, shuffle_part_key, shuffle_part_prefix
+from libs.storage_client.paths import task_output_key
+from libs.task_outputs import list_task_output_keys_for_part, write_task_output_manifest
 from worker.loaders import jsonDataSink, jsonDataSource, txtDataSource
 from worker.worker import (
     MapExecutor,
@@ -44,17 +47,20 @@ def build_task_paths(job_id: str, task_id: str) -> TaskPaths:
 def download_part_files(job_id: str, part_num: int, bucket: str = DEFAULT_BUCKET) -> str:
     # Reduce tasks rebuild their input locally by downloading every shuffle
     # fragment stored for the selected partition.
-    prefix = shuffle_part_prefix(job_id, part_num)
     local_dir = os.path.join("storage", job_id, "parts", f"part_{part_num}")
     cleanup_directory(local_dir)
     os.makedirs(local_dir, exist_ok=True)
 
-    objects = list_objects(bucket, prefix)
+    objects = list_task_output_keys_for_part(bucket, job_id, TaskType.MAP, part_num)
     if not objects:
-        raise FileNotFoundError(f"No files found in S3 path: {prefix}")
+        raise FileNotFoundError(f"No committed map output files found for job {job_id} part {part_num}")
 
     for obj_key in objects:
-        local_path = os.path.join(local_dir, os.path.basename(obj_key))
+        key_parts = obj_key.rstrip("/").split("/")
+        local_filename = os.path.basename(obj_key)
+        if len(key_parts) >= 2:
+            local_filename = f"{key_parts[-2]}_{local_filename}"
+        local_path = os.path.join(local_dir, local_filename)
         download_file(bucket, obj_key, local_path)
 
     return local_dir
@@ -159,8 +165,11 @@ def process_map_task(task: dict, task_paths: TaskPaths, worker_id: str) -> None:
 
 def process_reduce_task(task: dict, task_paths: TaskPaths, worker_id: str) -> None:
     job_id = task.get("job_id")
+    worker_task_id = task.get("task_id")
     if not job_id:
         raise ValueError("Missing job_id in task")
+    if not worker_task_id:
+        raise ValueError("Missing task_id in task")
 
     address = task.get("address")
     if address is None:
@@ -188,10 +197,21 @@ def process_reduce_task(task: dict, task_paths: TaskPaths, worker_id: str) -> No
     print("Reducing phase completed.")
     print(f"Reduce output stored in: {task_paths.reduce_output_dir}")
 
-    s3_key = reduce_output_key(job_id, part_num)
     local_reduce_file = os.path.join(task_paths.reduce_output_dir, f"reduced_{part_num}.jsonl")
+    s3_key = task_output_key(job_id, worker_task_id, os.path.basename(local_reduce_file))
     upload_file(local_reduce_file, bucket=bucket, key=s3_key)
     print(f"[{worker_id}] uploaded reduce output -> {s3_key}")
+    write_task_output_manifest(
+        bucket,
+        TaskOutputManifest(
+            job_id=job_id,
+            task_id=worker_task_id,
+            task_type=TaskType.REDUCE,
+            bucket=bucket,
+            created_at=time.time(),
+            outputs=[TaskOutputFile(part_num=part_num, key=s3_key)],
+        ),
+    )
 
 
 def upload_shuffle_files(
@@ -209,6 +229,7 @@ def upload_shuffle_files(
     print(f"[{worker_id}] uploading shuffle files from {shuffle_dir} to bucket '{bucket}'")
 
     upload_failures = []
+    outputs = []
     uploaded = 0
 
     for filename in sorted(os.listdir(shuffle_dir)):
@@ -216,14 +237,13 @@ def upload_shuffle_files(
         if not os.path.isfile(local_path):
             continue
 
-        # Partition index is embedded in the filename produced by the shuffler.
-        # If the naming changes, this fallback keeps uploads from crashing.
         part_idx = detect_part_index(filename)
-        s3_key = shuffle_part_key(job_id, part_idx, worker_task_id, filename)
+        s3_key = task_output_key(job_id, worker_task_id, filename)
 
         try:
             upload_file(local_path, bucket=bucket, key=s3_key)
             uploaded += 1
+            outputs.append(TaskOutputFile(part_num=part_idx, key=s3_key))
             print(f"[{worker_id}] uploaded {filename} -> {s3_key}")
         except Exception as exc:
             upload_failures.append((filename, str(exc)))
@@ -234,6 +254,17 @@ def upload_shuffle_files(
         raise RuntimeError(f"Upload errors: {len(upload_failures)} files failed")
 
     print(f"[{worker_id}] Upload completed. {uploaded} files uploaded.")
+    write_task_output_manifest(
+        bucket,
+        TaskOutputManifest(
+            job_id=job_id,
+            task_id=worker_task_id,
+            task_type=TaskType.MAP,
+            bucket=bucket,
+            created_at=time.time(),
+            outputs=outputs,
+        ),
+    )
 
     # Remove local task artifacts only after every upload has been confirmed.
     if os.path.isdir(task_dir):
