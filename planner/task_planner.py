@@ -6,7 +6,7 @@ import pika
 from libs.models import JobUploadedEvent, TaskType, WorkerTask
 from libs.storage_client.client import list_objects
 from libs.storage_client.config import settings
-from libs.storage_client.paths import task_manifests_prefix
+from libs.storage_client.paths import map_manifests_prefix
 from libs.task_outputs import list_task_output_manifests
 
 
@@ -98,7 +98,7 @@ def create_reduce_tasks_for_job(ch, job_id: str, bucket: str) -> list[WorkerTask
     '''
     part_numbers = list_reduce_part_numbers(bucket, job_id)
     if not part_numbers:
-        raise FileNotFoundError(f"No reduce parts found in {bucket}/{task_manifests_prefix(job_id)}")
+        raise FileNotFoundError(f"No reduce parts found in {bucket}/{map_manifests_prefix(job_id)}")
 
     tasks = []
     for part_num in part_numbers:

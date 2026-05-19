@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from libs.models import TaskOutputFile, TaskOutputManifest, TaskType
 from libs.storage_client.client import download_file, upload_file
 from libs.storage_client.config import settings
-from libs.storage_client.paths import task_output_key
+from libs.storage_client.paths import map_output_key, reduce_output_key
 from libs.task_outputs import list_task_output_keys_for_part, write_task_output_manifest
 from worker.loaders import jsonDataSink, jsonDataSource, txtDataSource
 from worker.worker import (
@@ -198,7 +198,7 @@ def process_reduce_task(task: dict, task_paths: TaskPaths, worker_id: str) -> No
     print(f"Reduce output stored in: {task_paths.reduce_output_dir}")
 
     local_reduce_file = os.path.join(task_paths.reduce_output_dir, f"reduced_{part_num}.jsonl")
-    s3_key = task_output_key(job_id, worker_task_id, os.path.basename(local_reduce_file))
+    s3_key = reduce_output_key(job_id, worker_task_id, os.path.basename(local_reduce_file))
     upload_file(local_reduce_file, bucket=bucket, key=s3_key)
     print(f"[{worker_id}] uploaded reduce output -> {s3_key}")
     write_task_output_manifest(
@@ -238,7 +238,7 @@ def upload_shuffle_files(
             continue
 
         part_idx = detect_part_index(filename)
-        s3_key = task_output_key(job_id, worker_task_id, filename)
+        s3_key = map_output_key(job_id, worker_task_id, filename)
 
         try:
             upload_file(local_path, bucket=bucket, key=s3_key)

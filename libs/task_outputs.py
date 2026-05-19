@@ -1,10 +1,31 @@
 from libs.models import TaskOutputManifest, TaskType
 from libs.storage_client.client import list_objects, read_object_bytes, upload_bytes
-from libs.storage_client.paths import task_manifest_key, task_manifests_prefix
+from libs.storage_client.paths import (
+    map_manifest_key,
+    map_manifests_prefix,
+    reduce_manifest_key,
+    reduce_manifests_prefix,
+)
+
+
+def _manifest_key(job_id: str, task_id: str, task_type: TaskType) -> str:
+    if task_type == TaskType.MAP:
+        return map_manifest_key(job_id, task_id)
+    if task_type == TaskType.REDUCE:
+        return reduce_manifest_key(job_id, task_id)
+    raise ValueError(f"Unsupported task type: {task_type}")
+
+
+def _manifest_prefixes(job_id: str, task_type: TaskType | None = None) -> list[str]:
+    if task_type == TaskType.MAP:
+        return [map_manifests_prefix(job_id)]
+    if task_type == TaskType.REDUCE:
+        return [reduce_manifests_prefix(job_id)]
+    return [map_manifests_prefix(job_id), reduce_manifests_prefix(job_id)]
 
 
 def write_task_output_manifest(bucket: str, manifest: TaskOutputManifest) -> str:
-    key = task_manifest_key(manifest.job_id, manifest.task_id)
+    key = _manifest_key(manifest.job_id, manifest.task_id, manifest.task_type)
     upload_bytes(
         manifest.model_dump_json().encode("utf-8"),
         bucket=bucket,
@@ -24,16 +45,16 @@ def list_task_output_manifests(
     job_id: str,
     task_type: TaskType | None = None,
 ) -> list[TaskOutputManifest]:
-    prefix = task_manifests_prefix(job_id)
     manifests = []
 
-    for key in sorted(list_objects(bucket, prefix)):
-        if not key.endswith(".json"):
-            continue
+    for prefix in _manifest_prefixes(job_id, task_type=task_type):
+        for key in sorted(list_objects(bucket, prefix)):
+            if not key.endswith(".json"):
+                continue
 
-        manifest = read_task_output_manifest(bucket, key)
-        if task_type is None or manifest.task_type == task_type:
-            manifests.append(manifest)
+            manifest = read_task_output_manifest(bucket, key)
+            if task_type is None or manifest.task_type == task_type:
+                manifests.append(manifest)
 
     return manifests
 

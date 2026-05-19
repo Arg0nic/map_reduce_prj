@@ -4,7 +4,7 @@ import time
 from libs.job_repository import create_job_repository
 from libs.models import JobStatus, TaskType
 from libs.storage_client.client import read_object_bytes, upload_bytes
-from libs.storage_client.paths import result_key, task_manifests_prefix
+from libs.storage_client.paths import reduce_manifests_prefix, result_key
 from libs.task_outputs import list_task_output_manifests
 
 
@@ -29,7 +29,7 @@ def collect_reduce_results(bucket: str, job_id: str) -> dict[str, int]:
     manifests = list_task_output_manifests(bucket, job_id, task_type=TaskType.REDUCE)
     keys = sorted(output.key for manifest in manifests for output in manifest.outputs)
     if not keys:
-        raise FileNotFoundError(f"No reduce output manifests found in {bucket}/{task_manifests_prefix(job_id)}")
+        raise FileNotFoundError(f"No reduce output manifests found in {bucket}/{reduce_manifests_prefix(job_id)}")
 
     result = {}
     for key in keys:

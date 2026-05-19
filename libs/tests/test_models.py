@@ -14,6 +14,7 @@ from libs.models import (
     TaskType,
     WorkerTask,
 )
+from libs.storage_client.paths import map_output_key
 
 
 def test_worker_task_serializes_task_type_as_string() -> None:
@@ -63,7 +64,7 @@ def test_task_output_manifest_serializes_task_outputs() -> None:
         outputs=[
             TaskOutputFile(
                 part_num=0,
-                key="jobs/job-1/task_outputs/map-1/part_0_0.jsonl",
+                key=map_output_key("job-1", "map-1", "part_0_0.jsonl"),
             )
         ],
     )
@@ -77,7 +78,7 @@ def test_task_output_manifest_serializes_task_outputs() -> None:
         "outputs": [
             {
                 "part_num": 0,
-                "key": "jobs/job-1/task_outputs/map-1/part_0_0.jsonl",
+                "key": map_output_key("job-1", "map-1", "part_0_0.jsonl"),
             }
         ],
     }

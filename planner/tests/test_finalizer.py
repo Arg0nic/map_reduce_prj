@@ -4,7 +4,7 @@ import pytest
 
 import planner.finalizer as finalizer
 from libs.models import JobStatus, TaskOutputFile, TaskOutputManifest, TaskType
-from libs.storage_client.paths import result_key, task_output_key
+from libs.storage_client.paths import reduce_output_key, result_key
 
 
 def make_reduce_manifest(task_id: str, part_num: int, key: str) -> TaskOutputManifest:
@@ -21,8 +21,8 @@ def make_reduce_manifest(task_id: str, part_num: int, key: str) -> TaskOutputMan
 def test_collect_reduce_results_merges_jsonl_reduce_outputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    key_1 = task_output_key("job-1", "reduce-1", "reduced_1.jsonl")
-    key_0 = task_output_key("job-1", "reduce-0", "reduced_0.jsonl")
+    key_1 = reduce_output_key("job-1", "reduce-1", "reduced_1.jsonl")
+    key_0 = reduce_output_key("job-1", "reduce-0", "reduced_0.jsonl")
     objects = {
         key_1: b'{"beta": "2"}\n{"alpha": 1}\n\n',
         key_0: b'{"alpha": 3}\n{"gamma": 4}\n',
@@ -59,7 +59,7 @@ def test_collect_reduce_results_rejects_missing_reduce_outputs(
 def test_collect_reduce_results_propagates_invalid_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    key = task_output_key("job-1", "reduce-0", "reduced_0.jsonl")
+    key = reduce_output_key("job-1", "reduce-0", "reduced_0.jsonl")
     monkeypatch.setattr(
         finalizer,
         "list_task_output_manifests",

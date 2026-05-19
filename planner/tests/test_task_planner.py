@@ -4,6 +4,7 @@ import pytest
 
 import planner.task_planner as task_planner
 from libs.models import JobUploadedEvent, TaskOutputFile, TaskOutputManifest, TaskType
+from libs.storage_client.paths import map_output_key
 
 
 class FakeChannel:
@@ -68,8 +69,8 @@ def test_list_reduce_part_numbers_discovers_sorted_partition_numbers(
                 bucket="bucket-1",
                 created_at=123.45,
                 outputs=[
-                    TaskOutputFile(part_num=2, key="jobs/job-1/task_outputs/map-1/part_2_0.jsonl"),
-                    TaskOutputFile(part_num=0, key="jobs/job-1/task_outputs/map-1/part_0_0.jsonl"),
+                    TaskOutputFile(part_num=2, key=map_output_key("job-1", "map-1", "part_2_0.jsonl")),
+                    TaskOutputFile(part_num=0, key=map_output_key("job-1", "map-1", "part_0_0.jsonl")),
                 ],
             ),
             TaskOutputManifest(
@@ -79,7 +80,7 @@ def test_list_reduce_part_numbers_discovers_sorted_partition_numbers(
                 bucket="bucket-1",
                 created_at=123.45,
                 outputs=[
-                    TaskOutputFile(part_num=2, key="jobs/job-1/task_outputs/map-2/part_2_0.jsonl"),
+                    TaskOutputFile(part_num=2, key=map_output_key("job-1", "map-2", "part_2_0.jsonl")),
                 ],
             ),
         ],

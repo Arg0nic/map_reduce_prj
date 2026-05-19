@@ -5,7 +5,7 @@ import pytest
 
 import worker.task_processing as task_processing
 from libs.models import TaskType
-from libs.storage_client.paths import task_output_key
+from libs.storage_client.paths import map_output_key, reduce_output_key
 from worker.task_processing import TaskPaths
 
 
@@ -135,8 +135,8 @@ def test_download_part_files_downloads_all_objects(
         task_processing,
         "list_task_output_keys_for_part",
         lambda bucket, job_id, task_type, part_num: [
-            "jobs/job-1/task_outputs/map-1/part_2_0.jsonl",
-            "jobs/job-1/task_outputs/map-2/part_2_0.jsonl",
+            "jobs/job-1/map_outputs/map-1/part_2_0.jsonl",
+            "jobs/job-1/map_outputs/map-2/part_2_0.jsonl",
         ],
     )
     monkeypatch.setattr(task_processing, "download_file", fake_download_file)
@@ -148,12 +148,12 @@ def test_download_part_files_downloads_all_objects(
     assert calls == [
         (
             "bucket-1",
-            "jobs/job-1/task_outputs/map-1/part_2_0.jsonl",
+            "jobs/job-1/map_outputs/map-1/part_2_0.jsonl",
             os.path.join(result, "map-1_part_2_0.jsonl"),
         ),
         (
             "bucket-1",
-            "jobs/job-1/task_outputs/map-2/part_2_0.jsonl",
+            "jobs/job-1/map_outputs/map-2/part_2_0.jsonl",
             os.path.join(result, "map-2_part_2_0.jsonl"),
         ),
     ]
@@ -172,7 +172,7 @@ def test_download_part_files_removes_stale_part_files(
     monkeypatch.setattr(
         task_processing,
         "list_task_output_keys_for_part",
-        lambda bucket, job_id, task_type, part_num: ["jobs/job-1/task_outputs/map-1/new.jsonl"],
+        lambda bucket, job_id, task_type, part_num: ["jobs/job-1/map_outputs/map-1/new.jsonl"],
     )
     monkeypatch.setattr(task_processing, "download_file", lambda bucket, key, local_path: Path(local_path).write_text("new", encoding="utf-8"))
 
@@ -233,12 +233,12 @@ def test_upload_shuffle_files_uploads_files_and_cleans_task_dir(
         (
             "part-2-0.jsonl",
             "bucket-1",
-            task_output_key("job-1", "map-1", "part-2-0.jsonl"),
+            map_output_key("job-1", "map-1", "part-2-0.jsonl"),
         ),
         (
             "part_1_0.jsonl",
             "bucket-1",
-            task_output_key("job-1", "map-1", "part_1_0.jsonl"),
+            map_output_key("job-1", "map-1", "part_1_0.jsonl"),
         ),
     ]
     assert cleanups == [str(task_dir)]
@@ -250,8 +250,8 @@ def test_upload_shuffle_files_uploads_files_and_cleans_task_dir(
     assert manifest.task_type == TaskType.MAP
     assert manifest.created_at == 500.0
     assert [(output.part_num, output.key) for output in manifest.outputs] == [
-        (2, task_output_key("job-1", "map-1", "part-2-0.jsonl")),
-        (1, task_output_key("job-1", "map-1", "part_1_0.jsonl")),
+        (2, map_output_key("job-1", "map-1", "part-2-0.jsonl")),
+        (1, map_output_key("job-1", "map-1", "part_1_0.jsonl")),
     ]
 
 
@@ -416,7 +416,7 @@ def test_process_reduce_task_downloads_reduces_and_uploads_output(
         (
             os.path.join(paths.reduce_output_dir, "reduced_2.jsonl"),
             "bucket-1",
-            task_output_key("job-1", "reduce-2", "reduced_2.jsonl"),
+            reduce_output_key("job-1", "reduce-2", "reduced_2.jsonl"),
         ),
     ]
     assert len(manifests) == 1
@@ -425,7 +425,7 @@ def test_process_reduce_task_downloads_reduces_and_uploads_output(
     assert manifest.task_type == TaskType.REDUCE
     assert manifest.created_at == 600.0
     assert [(output.part_num, output.key) for output in manifest.outputs] == [
-        (2, task_output_key("job-1", "reduce-2", "reduced_2.jsonl")),
+        (2, reduce_output_key("job-1", "reduce-2", "reduced_2.jsonl")),
     ]
 
 
