@@ -1,10 +1,14 @@
 import time
 
-from sqlalchemy import BigInteger, Column, Float, Integer, MetaData, String, Table, create_engine, select
+from sqlalchemy import BigInteger, Column, DateTime, Integer, MetaData, String, Table, create_engine, select
 from sqlalchemy.dialects.postgresql import JSONB, insert
+
+from libs.db_time import decode_timestamp_fields, encode_timestamp_fields
 
 from .base import AbstractJobRepository
 
+
+JOB_TIMESTAMP_COLUMNS = {"submitted_at", "updated_at", "completed_at"}
 
 JOB_TABLE_COLUMNS = [
     "job_id",
@@ -37,9 +41,9 @@ def _create_jobs_table():
         Column("chunk_count", Integer),
         Column("total_bytes", BigInteger),
         Column("chunks", JSONB),
-        Column("submitted_at", Float),
-        Column("updated_at", Float),
-        Column("completed_at", Float),
+        Column("submitted_at", DateTime(timezone=True)),
+        Column("updated_at", DateTime(timezone=True)),
+        Column("completed_at", DateTime(timezone=True)),
         Column("result_key", String),
         Column("planner_status", String),
         Column("planner_message", String),
@@ -65,8 +69,11 @@ class PostgresJobRepository(AbstractJobRepository):
     def _job_payload(self, job: dict) -> dict:
         return {key: job[key] for key in JOB_TABLE_COLUMNS if key in job}
 
+    def _job_db_payload(self, job: dict) -> dict:
+        return encode_timestamp_fields(job, JOB_TIMESTAMP_COLUMNS)
+
     def _row_to_job(self, row) -> dict:
-        return dict(row)
+        return decode_timestamp_fields(dict(row), JOB_TIMESTAMP_COLUMNS)
 
     def save(self, job: dict) -> dict:
         # Keep the repository contract aligned with LocalJsonJobRepository:
@@ -77,10 +84,11 @@ class PostgresJobRepository(AbstractJobRepository):
         if not payload.get("job_id"):
             raise ValueError("Job metadata must include job_id.")
 
-        statement = insert(self.jobs).values(**payload)
+        db_payload = self._job_db_payload(payload)
+        statement = insert(self.jobs).values(**db_payload)
         update_values = {
             key: getattr(statement.excluded, key)
-            for key in payload
+            for key in db_payload
             if key != "job_id"
         }
         statement = statement.on_conflict_do_update(
@@ -111,10 +119,11 @@ class PostgresJobRepository(AbstractJobRepository):
         payload = self._job_payload(patch)
         payload["updated_at"] = time.time()
 
+        db_payload = self._job_db_payload(payload)
         statement = (
             self.jobs.update()
             .where(self.jobs.c.job_id == job_id)
-            .values(**payload)
+            .values(**db_payload)
         )
 
         with self.engine.begin() as connection:

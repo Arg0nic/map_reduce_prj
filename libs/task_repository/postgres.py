@@ -1,13 +1,17 @@
 import time
 import uuid
 
-from sqlalchemy import Column, Float, Integer, MetaData, String, Table, create_engine, select
+from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, create_engine, select
 from sqlalchemy.dialects.postgresql import JSONB, insert
 
+from libs.db_time import decode_timestamp_fields, encode_timestamp_fields
 from libs.models import TaskCompletedEvent, WorkerTask
 
 from .base import AbstractTaskRepository
 
+
+TASK_TIMESTAMP_COLUMNS = {"created_at", "published_at", "completed_at", "updated_at"}
+TASK_EVENT_TIMESTAMP_COLUMNS = {"created_at"}
 
 TASK_STATUS_PUBLISHED = "published"
 TASK_STATUS_COMPLETED = "completed"
@@ -30,13 +34,13 @@ def _create_task_tables():
         Column("storage", String),
         Column("bucket", String),
         Column("part_num", Integer),
-        Column("created_at", Float),
-        Column("published_at", Float),
-        Column("completed_at", Float),
+        Column("created_at", DateTime(timezone=True)),
+        Column("published_at", DateTime(timezone=True)),
+        Column("completed_at", DateTime(timezone=True)),
         Column("worker_id", String),
         Column("attempts", Integer),
         Column("error_message", String),
-        Column("updated_at", Float),
+        Column("updated_at", DateTime(timezone=True)),
     )
     task_events = Table(
         "task_events",
@@ -49,7 +53,7 @@ def _create_task_tables():
         Column("worker_id", String),
         Column("message", String),
         Column("payload", JSONB),
-        Column("created_at", Float),
+        Column("created_at", DateTime(timezone=True)),
     )
     return tasks, task_events
 
@@ -93,6 +97,18 @@ class PostgresTaskRepository(AbstractTaskRepository):
             "created_at": created_at or time.time(),
         }
 
+    def _task_db_payload(self, task: dict) -> dict:
+        return encode_timestamp_fields(task, TASK_TIMESTAMP_COLUMNS)
+
+    def _event_db_payload(self, event: dict) -> dict:
+        return encode_timestamp_fields(event, TASK_EVENT_TIMESTAMP_COLUMNS)
+
+    def _row_to_task(self, row) -> dict:
+        return decode_timestamp_fields(dict(row), TASK_TIMESTAMP_COLUMNS)
+
+    def _row_to_event(self, row) -> dict:
+        return decode_timestamp_fields(dict(row), TASK_EVENT_TIMESTAMP_COLUMNS)
+
     def record_tasks_published(self, tasks: list[WorkerTask]) -> None:
         if not tasks:
             return
@@ -112,10 +128,11 @@ class PostgresTaskRepository(AbstractTaskRepository):
                     "error_message": None,
                     "updated_at": published_at,
                 }
-                statement = insert(self.tasks).values(**row)
+                db_row = self._task_db_payload(row)
+                statement = insert(self.tasks).values(**db_row)
                 update_values = {
                     key: getattr(statement.excluded, key)
-                    for key in row
+                    for key in db_row
                     if key != "task_id"
                 }
                 connection.execute(
@@ -126,14 +143,16 @@ class PostgresTaskRepository(AbstractTaskRepository):
                 )
                 connection.execute(
                     insert(self.task_events).values(
-                        **self._event_payload(
-                            event_type=TASK_EVENT_PUBLISHED,
-                            job_id=task.job_id,
-                            task_id=task.task_id,
-                            task_type=task.type.value,
-                            payload=task_payload,
-                            message="Task published to worker queue.",
-                            created_at=published_at,
+                        **self._event_db_payload(
+                            self._event_payload(
+                                event_type=TASK_EVENT_PUBLISHED,
+                                job_id=task.job_id,
+                                task_id=task.task_id,
+                                task_type=task.type.value,
+                                payload=task_payload,
+                                message="Task published to worker queue.",
+                                created_at=published_at,
+                            )
                         )
                     )
                 )
@@ -144,13 +163,13 @@ class PostgresTaskRepository(AbstractTaskRepository):
         statement = (
             self.tasks.update()
             .where(self.tasks.c.task_id == event.task_id)
-            .values(
-                status=TASK_STATUS_COMPLETED,
-                completed_at=event.completed_at,
-                worker_id=event.worker_id,
-                part_num=event.part_num,
-                updated_at=updated_at,
-            )
+            .values(**self._task_db_payload({
+                "status": TASK_STATUS_COMPLETED,
+                "completed_at": event.completed_at,
+                "worker_id": event.worker_id,
+                "part_num": event.part_num,
+                "updated_at": updated_at,
+            }))
         )
 
         with self.engine.begin() as connection:
@@ -159,15 +178,17 @@ class PostgresTaskRepository(AbstractTaskRepository):
                 raise KeyError(f"Task metadata not found for task {event.task_id}")
             connection.execute(
                 insert(self.task_events).values(
-                    **self._event_payload(
-                        event_type=TASK_EVENT_COMPLETED,
-                        job_id=event.job_id,
-                        task_id=event.task_id,
-                        task_type=event.task_type.value,
-                        worker_id=event.worker_id,
-                        payload=payload,
-                        message="Task completed by worker.",
-                        created_at=event.completed_at,
+                    **self._event_db_payload(
+                        self._event_payload(
+                            event_type=TASK_EVENT_COMPLETED,
+                            job_id=event.job_id,
+                            task_id=event.task_id,
+                            task_type=event.task_type.value,
+                            worker_id=event.worker_id,
+                            payload=payload,
+                            message="Task completed by worker.",
+                            created_at=event.completed_at,
+                        )
                     )
                 )
             )
@@ -187,11 +208,11 @@ class PostgresTaskRepository(AbstractTaskRepository):
         statement = (
             self.tasks.update()
             .where(self.tasks.c.task_id == task_id)
-            .values(
-                status=TASK_STATUS_FAILED,
-                error_message=message,
-                updated_at=updated_at,
-            )
+            .values(**self._task_db_payload({
+                "status": TASK_STATUS_FAILED,
+                "error_message": message,
+                "updated_at": updated_at,
+            }))
         )
 
         with self.engine.begin() as connection:
@@ -200,14 +221,16 @@ class PostgresTaskRepository(AbstractTaskRepository):
                 raise KeyError(f"Task metadata not found for task {task_id}")
             connection.execute(
                 insert(self.task_events).values(
-                    **self._event_payload(
-                        event_type=TASK_EVENT_DEAD_LETTERED,
-                        job_id=job_id,
-                        task_id=task_id,
-                        task_type=task_type,
-                        payload=task,
-                        message=message,
-                        created_at=updated_at,
+                    **self._event_db_payload(
+                        self._event_payload(
+                            event_type=TASK_EVENT_DEAD_LETTERED,
+                            job_id=job_id,
+                            task_id=task_id,
+                            task_type=task_type,
+                            payload=task,
+                            message=message,
+                            created_at=updated_at,
+                        )
                     )
                 )
             )
@@ -219,7 +242,7 @@ class PostgresTaskRepository(AbstractTaskRepository):
             .order_by(self.tasks.c.created_at, self.tasks.c.task_id)
         )
         with self.engine.connect() as connection:
-            return [dict(row) for row in connection.execute(statement).mappings()]
+            return [self._row_to_task(row) for row in connection.execute(statement).mappings()]
 
     def list_events_for_job(self, job_id: str) -> list[dict]:
         statement = (
@@ -228,4 +251,4 @@ class PostgresTaskRepository(AbstractTaskRepository):
             .order_by(self.task_events.c.created_at, self.task_events.c.event_id)
         )
         with self.engine.connect() as connection:
-            return [dict(row) for row in connection.execute(statement).mappings()]
+            return [self._row_to_event(row) for row in connection.execute(statement).mappings()]

@@ -7,13 +7,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     storage TEXT NOT NULL,
     bucket TEXT NOT NULL,
     part_num INTEGER,
-    created_at DOUBLE PRECISION NOT NULL,
-    published_at DOUBLE PRECISION,
-    completed_at DOUBLE PRECISION,
+    created_at TIMESTAMPTZ NOT NULL,
+    published_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
     worker_id TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     error_message TEXT,
-    updated_at DOUBLE PRECISION NOT NULL
+    updated_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_job_id ON tasks (job_id);
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS task_events (
     worker_id TEXT,
     message TEXT,
     payload JSONB,
-    created_at DOUBLE PRECISION NOT NULL
+    created_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_events_job_id ON task_events (job_id);

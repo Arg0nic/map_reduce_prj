@@ -7,9 +7,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     chunk_count INTEGER,
     total_bytes BIGINT,
     chunks JSONB,
-    submitted_at DOUBLE PRECISION,
-    updated_at DOUBLE PRECISION,
-    completed_at DOUBLE PRECISION,
+    submitted_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
     result_key TEXT,
     planner_status TEXT,
     planner_message TEXT
