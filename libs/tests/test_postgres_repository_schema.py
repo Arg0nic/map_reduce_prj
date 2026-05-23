@@ -22,6 +22,7 @@ def test_task_repository_maps_time_columns_to_timestamptz() -> None:
 
     assert_timestamptz(tasks.c.created_at)
     assert_timestamptz(tasks.c.published_at)
+    assert_timestamptz(tasks.c.started_at)
     assert_timestamptz(tasks.c.completed_at)
     assert_timestamptz(tasks.c.updated_at)
     assert_timestamptz(task_events.c.created_at)

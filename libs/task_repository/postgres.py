@@ -4,21 +4,23 @@ import uuid
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, create_engine, select
 from sqlalchemy.dialects.postgresql import JSONB, insert
 
-from libs.db_time import decode_timestamp_fields, encode_timestamp_fields
+from libs.db_time import decode_timestamp_fields, encode_timestamp_fields, timestamp_to_datetime
 from libs.models import TaskCompletedEvent, WorkerTask
 
 from .base import AbstractTaskRepository
 
 
-TASK_TIMESTAMP_COLUMNS = {"created_at", "published_at", "completed_at", "updated_at"}
+TASK_TIMESTAMP_COLUMNS = {"created_at", "published_at", "started_at", "completed_at", "updated_at"}
 TASK_EVENT_TIMESTAMP_COLUMNS = {"created_at"}
 
 TASK_STATUS_PUBLISHED = "published"
+TASK_STATUS_RUNNING = "running"
 TASK_STATUS_COMPLETED = "completed"
 TASK_STATUS_FAILED = "failed"
 TASK_EVENT_PUBLISHED = "published"
+TASK_EVENT_STARTED = "started"
 TASK_EVENT_COMPLETED = "completed"
-TASK_EVENT_DEAD_LETTERED = "dead_lettered"
+TASK_EVENT_FAILED = "failed"
 
 
 def _create_task_tables():
@@ -36,6 +38,7 @@ def _create_task_tables():
         Column("part_num", Integer),
         Column("created_at", DateTime(timezone=True)),
         Column("published_at", DateTime(timezone=True)),
+        Column("started_at", DateTime(timezone=True)),
         Column("completed_at", DateTime(timezone=True)),
         Column("worker_id", String),
         Column("attempts", Integer),
@@ -122,6 +125,7 @@ class PostgresTaskRepository(AbstractTaskRepository):
                     "type": task_payload["type"],
                     "status": TASK_STATUS_PUBLISHED,
                     "published_at": published_at,
+                    "started_at": None,
                     "completed_at": None,
                     "worker_id": None,
                     "attempts": 0,
@@ -156,6 +160,54 @@ class PostgresTaskRepository(AbstractTaskRepository):
                         )
                     )
                 )
+
+    def mark_task_started(self, task: dict, worker_id: str, started_at: float) -> None:
+        task_id = task.get("task_id")
+        job_id = task.get("job_id")
+        task_type = task.get("type") or task.get("task_type")
+        if not task_id:
+            raise ValueError("Started task heartbeat is missing task_id.")
+        if not job_id:
+            raise ValueError("Started task heartbeat is missing job_id.")
+        if not task_type:
+            raise ValueError("Started task heartbeat is missing type.")
+
+        updated_at = time.time()
+        statement = (
+            self.tasks.update()
+            .where(
+                self.tasks.c.task_id == task_id,
+                self.tasks.c.status == TASK_STATUS_PUBLISHED,
+            )
+            .values(**self._task_db_payload({
+                "status": TASK_STATUS_RUNNING,
+                "started_at": started_at,
+                "worker_id": worker_id,
+                "part_num": task.get("part_num"),
+                "updated_at": updated_at,
+            }))
+        )
+
+        with self.engine.begin() as connection:
+            result = connection.execute(statement)
+            if result.rowcount == 0:
+                return
+            connection.execute(
+                insert(self.task_events).values(
+                    **self._event_db_payload(
+                        self._event_payload(
+                            event_type=TASK_EVENT_STARTED,
+                            job_id=job_id,
+                            task_id=task_id,
+                            task_type=task_type,
+                            worker_id=worker_id,
+                            payload=task,
+                            message="Task started by worker.",
+                            created_at=started_at,
+                        )
+                    )
+                )
+            )
 
     def mark_task_completed(self, event: TaskCompletedEvent) -> None:
         payload = event.model_dump(mode="json")
@@ -193,7 +245,12 @@ class PostgresTaskRepository(AbstractTaskRepository):
                 )
             )
 
-    def mark_task_failed(self, task: dict, message: str | None = None) -> None:
+    def mark_task_failed(
+        self,
+        task: dict,
+        message: str | None = None,
+        event_type: str = TASK_EVENT_FAILED,
+    ) -> None:
         task_id = task.get("task_id")
         job_id = task.get("job_id")
         task_type = task.get("type")
@@ -223,7 +280,7 @@ class PostgresTaskRepository(AbstractTaskRepository):
                 insert(self.task_events).values(
                     **self._event_db_payload(
                         self._event_payload(
-                            event_type=TASK_EVENT_DEAD_LETTERED,
+                            event_type=event_type,
                             job_id=job_id,
                             task_id=task_id,
                             task_type=task_type,
@@ -234,6 +291,19 @@ class PostgresTaskRepository(AbstractTaskRepository):
                     )
                 )
             )
+
+    def list_timed_out_running_tasks(self, cutoff_timestamp: float) -> list[dict]:
+        cutoff = timestamp_to_datetime(cutoff_timestamp)
+        statement = (
+            select(self.tasks)
+            .where(
+                self.tasks.c.status == TASK_STATUS_RUNNING,
+                self.tasks.c.started_at <= cutoff,
+            )
+            .order_by(self.tasks.c.started_at, self.tasks.c.task_id)
+        )
+        with self.engine.connect() as connection:
+            return [self._row_to_task(row) for row in connection.execute(statement).mappings()]
 
     def list_tasks_for_job(self, job_id: str) -> list[dict]:
         statement = (

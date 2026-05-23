@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 
 import pika
@@ -15,6 +16,8 @@ QUEUE_JOBS = "jobs"
 HEARTBEAT_QUEUE = "worker.heartbeat"
 TASK_COMPLETED_QUEUE = "task.completed"
 DEAD_TASK_QUEUE = "tasks.dead"
+RUNNING_TASK_TIMEOUT_SECONDS = 300
+RUNNING_TASK_TIMEOUT_CHECK_SECONDS = 30
 
 RABBIT_PASS = "password"
 RABBIT_LOGIN = "admin"
@@ -57,6 +60,12 @@ def heartbeat_callback(ch, method, properties, body):
     else:
         readable_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
         print(f"[Planner] heartbeat from {worker_id} at {readable_time}")
+
+    if isinstance(heartbeat.get("current_task"), dict):
+        try:
+            get_planner_service().handle_worker_heartbeat(heartbeat)
+        except Exception as exc:
+            print(f"[Planner] failed to handle heartbeat from {worker_id}: {exc}")
 
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -133,6 +142,23 @@ def task_dead_callback(ch, method, properties, body):
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
+def start_task_timeout_monitor():
+    '''
+    Periodically fails tasks that stayed running past the configured timeout.
+    '''
+    def monitor() -> None:
+        while True:
+            time.sleep(RUNNING_TASK_TIMEOUT_CHECK_SECONDS)
+            try:
+                get_planner_service().fail_timed_out_tasks(RUNNING_TASK_TIMEOUT_SECONDS)
+            except Exception as exc:
+                print(f"[Planner] failed to check running task timeouts: {exc}")
+
+    thread = threading.Thread(target=monitor, daemon=True)
+    thread.start()
+    return thread
+
+
 def main():
     '''
     Starts the planner RabbitMQ consumer loop.
@@ -159,6 +185,7 @@ def main():
     ch.basic_consume(queue=HEARTBEAT_QUEUE, on_message_callback=heartbeat_callback, auto_ack=False)
     ch.basic_consume(queue=TASK_COMPLETED_QUEUE, on_message_callback=task_completed_callback, auto_ack=False)
     ch.basic_consume(queue=DEAD_TASK_QUEUE, on_message_callback=task_dead_callback, auto_ack=False)
+    start_task_timeout_monitor()
     print("[Planner] listening for jobs, task completions, dead tasks, and worker heartbeats. Press CTRL+C to stop.")
 
     try:

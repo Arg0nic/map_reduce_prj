@@ -40,6 +40,69 @@ def test_heartbeat_callback_acks_valid_heartbeat() -> None:
     assert channel.nacked == []
 
 
+def test_heartbeat_callback_delegates_current_task_and_acks(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = FakeChannel()
+    calls = []
+
+    class FakePlannerService:
+        def handle_worker_heartbeat(self, heartbeat):
+            calls.append(heartbeat)
+
+    monkeypatch.setattr(planner_main, "PLANNER_SERVICE", FakePlannerService())
+    heartbeat = {
+        "worker_id": "worker-1",
+        "ts": 123.45,
+        "current_task": {
+            "job_id": "job-1",
+            "task_id": "map-1",
+            "type": "map",
+            "started_at": 120.0,
+        },
+    }
+
+    planner_main.heartbeat_callback(
+        channel,
+        make_method(),
+        properties=None,
+        body=json.dumps(heartbeat),
+    )
+
+    assert calls == [heartbeat]
+    assert channel.acked == ["delivery-1"]
+    assert channel.nacked == []
+
+
+def test_heartbeat_callback_acks_when_current_task_handling_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = FakeChannel()
+
+    class FailingPlannerService:
+        def handle_worker_heartbeat(self, heartbeat):
+            raise RuntimeError("handling failed")
+
+    monkeypatch.setattr(planner_main, "PLANNER_SERVICE", FailingPlannerService())
+
+    planner_main.heartbeat_callback(
+        channel,
+        make_method(),
+        properties=None,
+        body=json.dumps(
+            {
+                "worker_id": "worker-1",
+                "ts": 123.45,
+                "current_task": {
+                    "job_id": "job-1",
+                    "task_id": "map-1",
+                    "type": "map",
+                    "started_at": 120.0,
+                },
+            }
+        ),
+    )
+
+    assert channel.acked == ["delivery-1"]
+    assert channel.nacked == []
+
+
 def test_heartbeat_callback_acks_invalid_json() -> None:
     channel = FakeChannel()
 

@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 import uuid
 
@@ -15,6 +16,8 @@ DEAD_QUEUE_NAME = "tasks.dead"
 TASK_COMPLETED_QUEUE = "task.completed"
 WORKER_ID = str(uuid.uuid4())[:8]
 DEFAULT_BUCKET = settings.DEFAULT_BUCKET or "mapreduce-data"
+CURRENT_TASK = None
+CURRENT_TASK_LOCK = threading.Lock()
 
 
 RABBIT_PASS = "password"
@@ -24,6 +27,33 @@ RABBIT_PORT = 5672
 
 # number of retries for failed tasks
 MAX_RETRIES = 3
+
+
+def set_current_task(task: dict, task_type: TaskType, started_at: float) -> None:
+    global CURRENT_TASK
+    with CURRENT_TASK_LOCK:
+        CURRENT_TASK = {
+            "job_id": task.get("job_id"),
+            "task_id": task.get("task_id"),
+            "type": task_type.value,
+            "bucket": task.get("bucket", DEFAULT_BUCKET),
+            "started_at": started_at,
+            "part_num": task.get("part_num"),
+        }
+
+
+def clear_current_task(task_id: str | None = None) -> None:
+    global CURRENT_TASK
+    with CURRENT_TASK_LOCK:
+        if task_id is None or CURRENT_TASK is None or CURRENT_TASK.get("task_id") == task_id:
+            CURRENT_TASK = None
+
+
+def get_current_task_snapshot() -> dict | None:
+    with CURRENT_TASK_LOCK:
+        if CURRENT_TASK is None:
+            return None
+        return dict(CURRENT_TASK)
 
 
 def publish_task_completed(ch, task: dict, task_type: TaskType) -> None:
@@ -70,6 +100,7 @@ def callback(ch, method, properties, body):
 
     try:
         task_type = TaskType(task.get("type"))
+        set_current_task(task, task_type, started_at=time.time())
         if task_type == TaskType.MAP:
             process_map_task(task, task_paths, worker_id=WORKER_ID)
         elif task_type == TaskType.REDUCE:
@@ -104,6 +135,8 @@ def callback(ch, method, properties, body):
             )
             ch.basic_ack(delivery_tag=method.delivery_tag)
             print(f"[{WORKER_ID}] requeued task (attempt {next_attempt})")
+    finally:
+        clear_current_task(task.get("task_id"))
 
 
 def main():
@@ -131,6 +164,7 @@ def main():
             rabbit_pass=RABBIT_PASS,
             rabbit_host=RABBIT_HOST,
             rabbit_port=RABBIT_PORT,
+            task_snapshot_provider=get_current_task_snapshot,
         )
         ch.start_consuming()
     except KeyboardInterrupt:

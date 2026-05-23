@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     part_num INTEGER,
     created_at TIMESTAMPTZ NOT NULL,
     published_at TIMESTAMPTZ,
+    started_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
     worker_id TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_job_id ON tasks (job_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
 CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks (type);
+CREATE INDEX IF NOT EXISTS idx_tasks_running_timeout ON tasks (status, started_at);
 
 CREATE TABLE IF NOT EXISTS task_events (
     event_id TEXT PRIMARY KEY,

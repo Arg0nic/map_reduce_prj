@@ -38,6 +38,29 @@ def make_properties(headers: dict | None = None):
     return SimpleNamespace(headers=headers)
 
 
+def test_current_task_snapshot_returns_running_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worker_main, "DEFAULT_BUCKET", "bucket-default")
+    task = {
+        "job_id": "job-1",
+        "task_id": "map-2",
+        "type": "map",
+    }
+
+    worker_main.set_current_task(task, TaskType.MAP, started_at=123.45)
+
+    assert worker_main.get_current_task_snapshot() == {
+        "job_id": "job-1",
+        "task_id": "map-2",
+        "type": "map",
+        "bucket": "bucket-default",
+        "started_at": 123.45,
+        "part_num": None,
+    }
+
+    worker_main.clear_current_task("map-2")
+    assert worker_main.get_current_task_snapshot() is None
+
+
 def test_publish_task_completed_publishes_planner_event(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_main, "WORKER_ID", "worker-1")
     monkeypatch.setattr(worker_main.time, "time", lambda: 123.45)
@@ -142,11 +165,13 @@ def test_callback_processes_task_publishes_completion_and_acks(
     ]
     assert channel.acked == ["delivery-1"]
     assert channel.published == []
+    assert worker_main.get_current_task_snapshot() is None
 
 
 def test_callback_requeues_failed_task_with_incremented_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_main, "WORKER_ID", "worker-1")
     monkeypatch.setattr(worker_main, "process_map_task", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("bad")))
+    monkeypatch.setattr(worker_main.time, "time", lambda: 123.45)
     channel = FakeChannel()
     body = json.dumps({"job_id": "job-1", "task_id": "map-1", "type": "map"})
 
@@ -169,6 +194,7 @@ def test_callback_requeues_failed_task_with_incremented_attempts(monkeypatch: py
 def test_callback_sends_failed_task_to_dead_queue_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_main, "WORKER_ID", "worker-1")
     monkeypatch.setattr(worker_main, "process_map_task", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("bad")))
+    monkeypatch.setattr(worker_main.time, "time", lambda: 123.45)
     channel = FakeChannel()
     body = json.dumps({"job_id": "job-1", "task_id": "map-1", "type": "map"})
 

@@ -15,7 +15,20 @@ class AbstractTaskRepository(ABC):
         pass
 
     @abstractmethod
-    def mark_task_failed(self, task: dict, message: str | None = None) -> None:
+    def mark_task_started(self, task: dict, worker_id: str, started_at: float) -> None:
+        pass
+
+    @abstractmethod
+    def mark_task_failed(
+        self,
+        task: dict,
+        message: str | None = None,
+        event_type: str = "failed",
+    ) -> None:
+        pass
+
+    @abstractmethod
+    def list_timed_out_running_tasks(self, cutoff_timestamp: float) -> list[dict]:
         pass
 
     @abstractmethod
