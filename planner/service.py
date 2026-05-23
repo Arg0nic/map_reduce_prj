@@ -1,7 +1,8 @@
 import time
+from collections.abc import Callable
 
 from libs.job_repository import AbstractJobRepository
-from libs.models import JobStatus, JobUploadedEvent, TaskCompletedEvent, TaskType
+from libs.models import JobCancelledEvent, JobStatus, JobUploadedEvent, TaskCompletedEvent, TaskType
 from libs.task_repository import AbstractTaskRepository
 from planner.finalizer import finalize_job
 from planner.state import JobPlanState
@@ -21,6 +22,7 @@ class PlannerService:
         job_states: dict[str, JobPlanState] | None = None,
         task_repository: AbstractTaskRepository | None = None,
         job_repository: AbstractJobRepository | None = None,
+        job_cancelled_publisher: Callable[[JobCancelledEvent], None] | None = None,
     ):
         '''
         Creates a planner service.
@@ -31,6 +33,7 @@ class PlannerService:
         self.job_states = job_states if job_states is not None else {}
         self.task_repository = task_repository
         self.job_repository = job_repository
+        self.job_cancelled_publisher = job_cancelled_publisher
 
     def record_tasks_published(self, tasks) -> None:
         if self.task_repository is not None:
@@ -59,6 +62,20 @@ class PlannerService:
                     "planner_message": message,
                 },
             )
+
+    def publish_job_cancelled(self, job_id: str, reason: str, cancelled_at: float) -> None:
+        if self.job_cancelled_publisher is None:
+            return
+
+        event = JobCancelledEvent(
+            job_id=job_id,
+            reason=reason,
+            cancelled_at=cancelled_at,
+        )
+        try:
+            self.job_cancelled_publisher(event)
+        except Exception as exc:
+            print(f"[Planner] failed to publish cancellation for job {job_id}: {exc}")
 
     def is_job_failed(self, job_id: str) -> bool:
         if self.job_repository is None:
@@ -217,9 +234,11 @@ class PlannerService:
         if not task_type:
             raise ValueError("Dead task message is missing type.")
 
+        failed_at = time.time()
         message = f"Task {task_id} reached dead queue after worker retries."
         self.record_task_failed(task, message, event_type="dead_lettered")
-        self.mark_job_failed(job_id, message)
+        self.mark_job_failed(job_id, message, completed_at=failed_at)
+        self.publish_job_cancelled(job_id, message, cancelled_at=failed_at)
 
         state = self.job_states.get(job_id)
         if state is not None:
@@ -237,6 +256,7 @@ class PlannerService:
         current_time = now if now is not None else time.time()
         cutoff_timestamp = current_time - timeout_seconds
         timed_out_tasks = self.task_repository.list_timed_out_running_tasks(cutoff_timestamp)
+        cancelled_jobs = set()
 
         for task in timed_out_tasks:
             job_id = task.get("job_id")
@@ -246,7 +266,10 @@ class PlannerService:
 
             message = f"Task {task_id} timed out after {timeout_seconds:g} seconds."
             self.record_task_failed(task, message, event_type="timed_out")
-            self.mark_job_failed(job_id, message, completed_at=current_time)
+            if job_id not in cancelled_jobs:
+                self.mark_job_failed(job_id, message, completed_at=current_time)
+                self.publish_job_cancelled(job_id, message, cancelled_at=current_time)
+                cancelled_jobs.add(job_id)
 
             state = self.job_states.get(job_id)
             if state is not None:

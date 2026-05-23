@@ -379,6 +379,35 @@ def test_handle_task_dead_records_failed_task_and_job(
     assert state.done is True
 
 
+def test_handle_task_dead_publishes_job_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_repository = RecordingTaskRepository()
+    job_repository = RecordingJobRepository()
+    cancellations = []
+    service = PlannerService(
+        task_repository=task_repository,
+        job_repository=job_repository,
+        job_cancelled_publisher=cancellations.append,
+    )
+    monkeypatch.setattr(planner_service.time, "time", lambda: 500.0)
+    task = {
+        "job_id": "job-1",
+        "task_id": "map-1",
+        "type": "map",
+    }
+
+    service.handle_task_dead(task)
+
+    assert [event.model_dump(mode="json") for event in cancellations] == [
+        {
+            "job_id": "job-1",
+            "reason": "Task map-1 reached dead queue after worker retries.",
+            "cancelled_at": 500.0,
+        }
+    ]
+
+
 def test_fail_timed_out_tasks_marks_task_and_job_failed() -> None:
     task_repository = RecordingTaskRepository()
     job_repository = RecordingJobRepository()
@@ -413,6 +442,42 @@ def test_fail_timed_out_tasks_marks_task_and_job_failed() -> None:
         )
     ]
     assert state.done is True
+
+
+def test_fail_timed_out_tasks_publishes_job_cancellation_once() -> None:
+    task_repository = RecordingTaskRepository()
+    job_repository = RecordingJobRepository()
+    cancellations = []
+    service = PlannerService(
+        task_repository=task_repository,
+        job_repository=job_repository,
+        job_cancelled_publisher=cancellations.append,
+    )
+    task_repository.timed_out_tasks = [
+        {
+            "job_id": "job-1",
+            "task_id": "map-1",
+            "type": "map",
+            "started_at": 100.0,
+        },
+        {
+            "job_id": "job-1",
+            "task_id": "map-2",
+            "type": "map",
+            "started_at": 100.0,
+        },
+    ]
+
+    failed_count = service.fail_timed_out_tasks(timeout_seconds=30, now=131.0)
+
+    assert failed_count == 2
+    assert [event.model_dump(mode="json") for event in cancellations] == [
+        {
+            "job_id": "job-1",
+            "reason": "Task map-1 timed out after 30 seconds.",
+            "cancelled_at": 131.0,
+        }
+    ]
 
 
 @pytest.mark.parametrize(

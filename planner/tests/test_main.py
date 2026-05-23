@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 import planner.main as planner_main
+from libs.models import JobCancelledEvent
 
 
 class FakeChannel:
@@ -24,6 +25,70 @@ class FakeChannel:
 
 def make_method(delivery_tag: str = "delivery-1"):
     return SimpleNamespace(delivery_tag=delivery_tag)
+
+
+def test_publish_job_cancelled_uses_fanout_exchange(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = {}
+
+    class FakeCredentials:
+        def __init__(self, login, password):
+            self.login = login
+            self.password = password
+
+    class FakeConnectionParameters:
+        def __init__(self, host, port, virtual_host, credentials):
+            self.host = host
+            self.port = port
+            self.virtual_host = virtual_host
+            self.credentials = credentials
+
+    class FakeChannel:
+        def __init__(self):
+            self.exchanges = []
+            self.published = []
+
+        def exchange_declare(self, exchange, exchange_type, durable):
+            self.exchanges.append((exchange, exchange_type, durable))
+
+        def basic_publish(self, exchange, routing_key, body, properties):
+            self.published.append((exchange, routing_key, body, properties))
+
+    class FakeConnection:
+        def __init__(self, params):
+            self.params = params
+            self.channel_obj = FakeChannel()
+            self.closed = False
+            created["connection"] = self
+
+        def channel(self):
+            return self.channel_obj
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(planner_main.pika, "PlainCredentials", FakeCredentials)
+    monkeypatch.setattr(planner_main.pika, "ConnectionParameters", FakeConnectionParameters)
+    monkeypatch.setattr(planner_main.pika, "BlockingConnection", FakeConnection)
+
+    planner_main.publish_job_cancelled(
+        JobCancelledEvent(job_id="job-1", reason="failed", cancelled_at=123.45)
+    )
+
+    connection = created["connection"]
+    channel = connection.channel_obj
+    assert channel.exchanges == [(planner_main.JOB_CANCELLED_EXCHANGE, "fanout", True)]
+    assert len(channel.published) == 1
+    exchange, routing_key, body, properties = channel.published[0]
+    assert exchange == planner_main.JOB_CANCELLED_EXCHANGE
+    assert routing_key == ""
+    assert json.loads(body) == {
+        "job_id": "job-1",
+        "reason": "failed",
+        "cancelled_at": 123.45,
+    }
+    assert properties.delivery_mode == 2
+    assert properties.content_type == "application/json"
+    assert connection.closed is True
 
 
 def test_heartbeat_callback_acks_valid_heartbeat() -> None:

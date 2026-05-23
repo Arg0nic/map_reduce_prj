@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from libs.models import (
     ChunkInfo,
     Job,
+    JobCancelledEvent,
     JobStatus,
     JobUploadedEvent,
     TaskCompletedEvent,
@@ -93,6 +94,20 @@ def test_job_uploaded_event_preserves_chunk_prefix() -> None:
     )
 
     assert event.chunks_prefix == "jobs/job-1/chunks/"
+
+
+def test_job_cancelled_event_serializes_reason() -> None:
+    event = JobCancelledEvent(
+        job_id="job-1",
+        reason="task timed out",
+        cancelled_at=123.45,
+    )
+
+    assert json.loads(event.model_dump_json()) == {
+        "job_id": "job-1",
+        "reason": "task timed out",
+        "cancelled_at": 123.45,
+    }
 
 
 def test_job_model_contains_chunk_metadata_and_defaults() -> None:

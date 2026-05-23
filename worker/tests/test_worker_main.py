@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import worker.cancellation as cancellation
 import worker.main as worker_main
 from libs.models import TaskType
 
@@ -36,6 +37,11 @@ def make_method(delivery_tag: str = "delivery-1"):
 
 def make_properties(headers: dict | None = None):
     return SimpleNamespace(headers=headers)
+
+
+@pytest.fixture(autouse=True)
+def clear_cancelled_jobs() -> None:
+    cancellation.clear_cancelled_jobs()
 
 
 def test_current_task_snapshot_returns_running_task(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -108,6 +114,31 @@ def test_callback_acks_invalid_json_without_requeue() -> None:
     assert channel.published == []
 
 
+def test_callback_skips_cancelled_task_before_processing(monkeypatch: pytest.MonkeyPatch) -> None:
+    task = {
+        "job_id": "job-1",
+        "task_id": "map-1",
+        "type": "map",
+        "bucket": "bucket-1",
+    }
+    cancellation.mark_job_cancelled("job-1")
+    channel = FakeChannel()
+    calls = []
+    monkeypatch.setattr(worker_main, "build_task_paths", lambda *args: calls.append("paths"))
+    monkeypatch.setattr(worker_main, "process_map_task", lambda *args, **kwargs: calls.append("process"))
+
+    worker_main.callback(
+        channel,
+        make_method(),
+        make_properties(),
+        body=json.dumps(task),
+    )
+
+    assert calls == []
+    assert channel.acked == ["delivery-1"]
+    assert channel.published == []
+
+
 @pytest.mark.parametrize(
     ("task_type", "processor_name"),
     [
@@ -168,6 +199,45 @@ def test_callback_processes_task_publishes_completion_and_acks(
     assert worker_main.get_current_task_snapshot() is None
 
 
+def test_callback_does_not_publish_completion_when_job_cancelled_after_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(worker_main, "WORKER_ID", "worker-1")
+    task_paths = object()
+    calls = []
+    task = {
+        "job_id": "job-1",
+        "task_id": "map-1",
+        "type": "map",
+        "bucket": "bucket-1",
+    }
+    channel = FakeChannel()
+
+    def fake_process(received_task, received_paths, worker_id):
+        calls.append(("process", received_task, received_paths, worker_id))
+        cancellation.mark_job_cancelled("job-1")
+
+    monkeypatch.setattr(worker_main, "build_task_paths", lambda job_id, task_id: task_paths)
+    monkeypatch.setattr(worker_main, "process_map_task", fake_process)
+    monkeypatch.setattr(
+        worker_main,
+        "publish_task_completed",
+        lambda ch, received_task, received_task_type: calls.append("completed"),
+    )
+
+    worker_main.callback(
+        channel,
+        make_method(),
+        make_properties(),
+        body=json.dumps(task),
+    )
+
+    assert calls == [("process", task, task_paths, "worker-1")]
+    assert channel.acked == ["delivery-1"]
+    assert channel.published == []
+    assert worker_main.get_current_task_snapshot() is None
+
+
 def test_callback_requeues_failed_task_with_incremented_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_main, "WORKER_ID", "worker-1")
     monkeypatch.setattr(worker_main, "process_map_task", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("bad")))
@@ -189,6 +259,28 @@ def test_callback_requeues_failed_task_with_incremented_attempts(monkeypatch: py
     assert published["body"] == body
     assert published["properties"].headers["x-attempts"] == 1
     assert published["properties"].delivery_mode == 2
+
+
+def test_callback_acks_failed_cancelled_task_without_requeue(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worker_main, "WORKER_ID", "worker-1")
+
+    def fake_process(*args, **kwargs):
+        cancellation.mark_job_cancelled("job-1")
+        raise ValueError("bad")
+
+    monkeypatch.setattr(worker_main, "process_map_task", fake_process)
+    channel = FakeChannel()
+    body = json.dumps({"job_id": "job-1", "task_id": "map-1", "type": "map"})
+
+    worker_main.callback(
+        channel,
+        make_method(),
+        make_properties(headers={"x-attempts": 0}),
+        body=body,
+    )
+
+    assert channel.acked == ["delivery-1"]
+    assert channel.published == []
 
 
 def test_callback_sends_failed_task_to_dead_queue_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -6,7 +6,7 @@ import pika
 from pydantic import ValidationError
 
 from libs.job_repository import create_job_repository
-from libs.models import JobUploadedEvent, TaskCompletedEvent, WorkerTask
+from libs.models import JobCancelledEvent, JobUploadedEvent, TaskCompletedEvent, WorkerTask
 from libs.task_repository import create_task_repository
 from planner.service import PlannerService
 from planner.task_planner import QUEUE_TASKS
@@ -16,6 +16,7 @@ QUEUE_JOBS = "jobs"
 HEARTBEAT_QUEUE = "worker.heartbeat"
 TASK_COMPLETED_QUEUE = "task.completed"
 DEAD_TASK_QUEUE = "tasks.dead"
+JOB_CANCELLED_EXCHANGE = "job.cancelled"
 RUNNING_TASK_TIMEOUT_SECONDS = 300
 RUNNING_TASK_TIMEOUT_CHECK_SECONDS = 30
 
@@ -28,12 +29,38 @@ RABBIT_PORT = 5672
 PLANNER_SERVICE = None
 
 
+def publish_job_cancelled(event: JobCancelledEvent) -> None:
+    credentials = pika.PlainCredentials(RABBIT_LOGIN, RABBIT_PASS)
+    params = pika.ConnectionParameters(
+        host=RABBIT_HOST,
+        port=RABBIT_PORT,
+        virtual_host="/",
+        credentials=credentials,
+    )
+    conn = pika.BlockingConnection(params)
+    try:
+        ch = conn.channel()
+        ch.exchange_declare(exchange=JOB_CANCELLED_EXCHANGE, exchange_type="fanout", durable=True)
+        ch.basic_publish(
+            exchange=JOB_CANCELLED_EXCHANGE,
+            routing_key="",
+            body=event.model_dump_json(),
+            properties=pika.BasicProperties(
+                delivery_mode=2,
+                content_type="application/json",
+            ),
+        )
+    finally:
+        conn.close()
+
+
 def get_planner_service() -> PlannerService:
     global PLANNER_SERVICE
     if PLANNER_SERVICE is None:
         PLANNER_SERVICE = PlannerService(
             task_repository=create_task_repository(),
             job_repository=create_job_repository(),
+            job_cancelled_publisher=publish_job_cancelled,
         )
     return PLANNER_SERVICE
 
@@ -180,6 +207,7 @@ def main():
     ch.queue_declare(queue=QUEUE_JOBS, durable=True)
     ch.queue_declare(queue=TASK_COMPLETED_QUEUE, durable=True)
     ch.queue_declare(queue=DEAD_TASK_QUEUE, durable=True)
+    ch.exchange_declare(exchange=JOB_CANCELLED_EXCHANGE, exchange_type="fanout", durable=True)
 
     ch.basic_consume(queue=QUEUE_JOBS, on_message_callback=job_callback, auto_ack=False)
     ch.basic_consume(queue=HEARTBEAT_QUEUE, on_message_callback=heartbeat_callback, auto_ack=False)

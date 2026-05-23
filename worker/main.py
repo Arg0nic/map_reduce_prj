@@ -7,6 +7,7 @@ import pika
 
 from libs.models import TaskCompletedEvent, TaskType
 from libs.storage_client.config import settings
+from worker.cancellation import is_job_cancelled, start_cancellation_listener_thread
 from worker.heartbeat import start_heartbeat_thread
 from worker.task_processing import build_task_paths, process_map_task, process_reduce_task
 
@@ -87,6 +88,11 @@ def callback(ch, method, properties, body):
         return
 
     print(f"[{WORKER_ID}] picked {task.get('task_id')}")
+    job_id = task.get("job_id")
+    if is_job_cancelled(job_id):
+        print(f"[{WORKER_ID}] skipped cancelled job {job_id} task {task.get('task_id')}")
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        return
 
     headers = {}
     if properties is not None:
@@ -107,12 +113,20 @@ def callback(ch, method, properties, body):
             process_reduce_task(task, task_paths, worker_id=WORKER_ID)
         else:
             raise ValueError(f"Unknown task type: {task_type}")
+        if is_job_cancelled(job_id):
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            print(f"[{WORKER_ID}] completed task {task.get('task_id')} but job {job_id} was cancelled")
+            return
         publish_task_completed(ch, task, task_type)
         ch.basic_ack(delivery_tag=method.delivery_tag)
         print(f"[{WORKER_ID}] completed {task.get('task_id')} type={task_type}")
 
     except Exception as exc:
         print(f"[{WORKER_ID}] error processing {task.get('task_id')}: {exc}")
+        if is_job_cancelled(job_id):
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            print(f"[{WORKER_ID}] skipped retry for cancelled job {job_id} task {task.get('task_id')}")
+            return
 
         next_attempt = attempts + 1
         headers["x-attempts"] = next_attempt
@@ -165,6 +179,13 @@ def main():
             rabbit_host=RABBIT_HOST,
             rabbit_port=RABBIT_PORT,
             task_snapshot_provider=get_current_task_snapshot,
+        )
+        start_cancellation_listener_thread(
+            worker_id=WORKER_ID,
+            rabbit_login=RABBIT_LOGIN,
+            rabbit_pass=RABBIT_PASS,
+            rabbit_host=RABBIT_HOST,
+            rabbit_port=RABBIT_PORT,
         )
         ch.start_consuming()
     except KeyboardInterrupt:

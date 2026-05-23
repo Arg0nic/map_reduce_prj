@@ -29,6 +29,12 @@ class JobUploadedEvent(BaseModel):
     created_at: float
 
 
+class JobCancelledEvent(BaseModel):
+    job_id: str
+    reason: str
+    cancelled_at: float
+
+
 class Job(BaseModel):
     job_id: str
     status: JobStatus
