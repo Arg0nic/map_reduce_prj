@@ -76,12 +76,13 @@ def create_map_tasks_for_job(ch, event: JobUploadedEvent) -> list[WorkerTask]:
         raise FileNotFoundError(f"No chunks found in {event.bucket}/{event.chunks_prefix}")
 
     tasks = []
-    for chunk_key in chunk_keys:
+    for index, chunk_key in enumerate(chunk_keys):
         task = send_task(
             ch,
             TaskType.MAP,
             address=chunk_key,
             job_id=event.job_id,
+            task_id=f"{event.job_id}-map-chunk-{index}",
             bucket=event.bucket,
         )
         tasks.append(task)

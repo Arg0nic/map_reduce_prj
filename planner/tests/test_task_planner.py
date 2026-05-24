@@ -117,6 +117,10 @@ def test_create_map_tasks_for_job_creates_one_task_per_sorted_chunk(
         "jobs/job-1/chunks/part_00000.txt",
         "jobs/job-1/chunks/part_00001.txt",
     ]
+    assert [task.task_id for task in tasks] == [
+        "job-1-map-chunk-0",
+        "job-1-map-chunk-1",
+    ]
     assert [task.type for task in tasks] == [TaskType.MAP, TaskType.MAP]
     assert len(channel.published) == 2
 

@@ -4,49 +4,81 @@ from libs.job_repository import AbstractJobRepository
 from libs.models import JobStatus, JobUploadedEvent, TaskCompletedEvent, TaskType
 from libs.task_repository import AbstractTaskRepository
 from planner.finalizer import finalize_job
-from planner.state import JobPlanState
 from planner.task_planner import create_map_tasks_for_job, create_reduce_tasks_for_job
+
+
+TASK_STATUS_COMPLETED = "completed"
 
 
 class PlannerService:
     '''
     Coordinates the lifecycle of active MapReduce jobs.
 
-    The service owns in-memory job progress, starts reduce after all map tasks
-    complete, and finalizes the job after all reduce tasks complete.
+    Task progress is derived from the task repository so planner can continue
+    phase transitions after a restart.
     '''
 
     def __init__(
         self,
-        job_states: dict[str, JobPlanState] | None = None,
         task_repository: AbstractTaskRepository | None = None,
         job_repository: AbstractJobRepository | None = None,
     ):
         '''
         Creates a planner service.
 
-        State is injectable so tests and future persistent stores can control
-        the planner's view of active jobs.
+        Task repository is the source of truth for planner-visible progress.
         '''
-        self.job_states = job_states if job_states is not None else {}
         self.task_repository = task_repository
         self.job_repository = job_repository
 
+    def _require_task_repository(self) -> AbstractTaskRepository:
+        if self.task_repository is None:
+            raise RuntimeError("Task repository is required to coordinate planner state.")
+        return self.task_repository
+
+    def list_tasks_for_job(self, job_id: str) -> list[dict]:
+        return self._require_task_repository().list_tasks_for_job(job_id)
+
+    def task_type_value(self, task: dict) -> str | None:
+        task_type = task.get("type") or task.get("task_type")
+        if isinstance(task_type, TaskType):
+            return task_type.value
+        return task_type
+
+    def tasks_of_type(self, tasks: list[dict], task_type: TaskType) -> list[dict]:
+        return [task for task in tasks if self.task_type_value(task) == task_type.value]
+
+    def find_task(self, tasks: list[dict], task_id: str, task_type: TaskType) -> dict | None:
+        for task in tasks:
+            if task.get("task_id") == task_id and self.task_type_value(task) == task_type.value:
+                return task
+        return None
+
+    def completed_count(self, tasks: list[dict]) -> int:
+        return sum(1 for task in tasks if task.get("status") == TASK_STATUS_COMPLETED)
+
     def record_tasks_published(self, tasks) -> None:
-        if self.task_repository is not None:
-            self.task_repository.record_tasks_published(tasks)
+        self._require_task_repository().record_tasks_published(tasks)
 
     def record_task_completed(self, event: TaskCompletedEvent) -> None:
-        if self.task_repository is not None:
-            self.task_repository.mark_task_completed(event)
+        self._require_task_repository().mark_task_completed(event)
 
     def record_task_started(self, task: dict, worker_id: str, started_at: float) -> None:
-        if self.task_repository is not None:
-            self.task_repository.mark_task_started(task, worker_id=worker_id, started_at=started_at)
+        self._require_task_repository().mark_task_started(task, worker_id=worker_id, started_at=started_at)
 
     def record_task_failed(self, task: dict, message: str, event_type: str = "failed") -> None:
-        if self.task_repository is not None:
-            self.task_repository.mark_task_failed(task, message=message, event_type=event_type)
+        self._require_task_repository().mark_task_failed(task, message=message, event_type=event_type)
+
+    def mark_job_processing(self, job_id: str, planner_status: str, message: str) -> None:
+        if self.job_repository is not None:
+            self.job_repository.update(
+                job_id,
+                {
+                    "status": JobStatus.PROCESSING.value,
+                    "planner_status": planner_status,
+                    "planner_message": message,
+                },
+            )
 
     def mark_job_failed(self, job_id: str, message: str, completed_at: float | None = None) -> None:
         if self.job_repository is not None:
@@ -70,31 +102,58 @@ class PlannerService:
 
         return job.get("status") == JobStatus.FAILED.value
 
+    def is_job_done(self, job_id: str) -> bool:
+        if self.job_repository is None:
+            return False
+
+        job = self.job_repository.load(job_id)
+        if job is None:
+            return False
+
+        return job.get("status") == JobStatus.DONE.value
+
+    def is_job_finished(self, job_id: str) -> bool:
+        return self.is_job_done(job_id) or self.is_job_failed(job_id)
+
     def handle_job_uploaded(self, ch, event: JobUploadedEvent) -> None:
         '''
         Plans map tasks for a newly uploaded job.
 
         A new uploaded job starts with one map task per uploaded chunk.
         '''
+        existing_tasks = self.list_tasks_for_job(event.job_id)
+        if existing_tasks:
+            print(f"[Planner] job {event.job_id} already has planned tasks, ack and skip")
+            return
+
         tasks = create_map_tasks_for_job(ch, event)
         self.record_tasks_published(tasks)
-        print(f"[Planner] planned {len(tasks)} map tasks for job {event.job_id}")
-        self.job_states[event.job_id] = JobPlanState(
-            bucket=event.bucket,
-            map_task_ids={task.task_id for task in tasks},
+        self.mark_job_processing(
+            event.job_id,
+            planner_status="map_running",
+            message=f"Planner published {len(tasks)} map tasks.",
         )
+        print(f"[Planner] planned {len(tasks)} map tasks for job {event.job_id}")
 
-    def start_reduce_phase(self, ch, job_id: str, state: JobPlanState) -> None:
+    def start_reduce_phase(self, ch, job_id: str, bucket: str) -> None:
         '''
         Creates reduce tasks for a job whose map phase is complete.
 
         Reduce tasks are created only after every map task has uploaded its
         shuffle output, so reduce workers can read complete partition data.
         '''
-        tasks = create_reduce_tasks_for_job(ch, job_id, state.bucket)
+        existing_tasks = self.list_tasks_for_job(job_id)
+        if self.tasks_of_type(existing_tasks, TaskType.REDUCE):
+            print(f"[Planner] reduce phase for job {job_id} is already planned, ack and skip")
+            return
+
+        tasks = create_reduce_tasks_for_job(ch, job_id, bucket)
         self.record_tasks_published(tasks)
-        state.reduce_task_ids = {task.task_id for task in tasks}
-        state.reduce_started = True
+        self.mark_job_processing(
+            job_id,
+            planner_status="reduce_running",
+            message=f"Planner published {len(tasks)} reduce tasks.",
+        )
         print(f"[Planner] planned {len(tasks)} reduce tasks for job {job_id}")
 
     def handle_worker_heartbeat(self, heartbeat: dict) -> None:
@@ -123,31 +182,30 @@ class PlannerService:
         '''
         Records a completed map task and starts reduce when all maps are done.
 
-        Completion events may be delivered more than once, so task ids are
-        recorded in sets and duplicates do not advance the phase twice.
+        Completion events may be delivered more than once, so current progress
+        is checked in the task repository before changing phase.
         '''
-        state = self.job_states.get(event.job_id)
-        if state is None:
-            print(f"[Planner] completion for unknown job {event.job_id}, ack and skip")
-            return
+        tasks = self.list_tasks_for_job(event.job_id)
+        task = self.find_task(tasks, event.task_id, TaskType.MAP)
 
-        if event.task_id not in state.map_task_ids:
+        if task is None:
             print(f"[Planner] unknown map task {event.task_id} for job {event.job_id}, ack and skip")
             return
 
-        if event.task_id in state.completed_map_task_ids:
+        if task.get("status") == TASK_STATUS_COMPLETED:
             print(f"[Planner] duplicate map completion {event.task_id} for job {event.job_id}")
         else:
             self.record_task_completed(event)
-            state.completed_map_task_ids.add(event.task_id)
-            print(
-                f"[Planner] map completed for job {event.job_id}: "
-                f"{len(state.completed_map_task_ids)}/{len(state.map_task_ids)}"
-            )
+            tasks = self.list_tasks_for_job(event.job_id)
 
-        if len(state.completed_map_task_ids) == len(state.map_task_ids) and not state.reduce_started:
+        map_tasks = self.tasks_of_type(tasks, TaskType.MAP)
+        reduce_tasks = self.tasks_of_type(tasks, TaskType.REDUCE)
+        completed_maps = self.completed_count(map_tasks)
+        print(f"[Planner] map completed for job {event.job_id}: {completed_maps}/{len(map_tasks)}")
+
+        if map_tasks and completed_maps == len(map_tasks) and not reduce_tasks:
             print(f"[Planner] all map tasks completed for job {event.job_id}. Starting reduce phase.")
-            self.start_reduce_phase(ch, event.job_id, state)
+            self.start_reduce_phase(ch, event.job_id, event.bucket)
 
     def handle_reduce_completed(self, event: TaskCompletedEvent) -> None:
         '''
@@ -156,28 +214,25 @@ class PlannerService:
         The last reduce completion is the point where planner can build the
         final result object and mark the job as done for the API.
         '''
-        state = self.job_states.get(event.job_id)
-        if state is None:
-            print(f"[Planner] completion for unknown job {event.job_id}, ack and skip")
-            return
+        tasks = self.list_tasks_for_job(event.job_id)
+        task = self.find_task(tasks, event.task_id, TaskType.REDUCE)
 
-        if event.task_id not in state.reduce_task_ids:
+        if task is None:
             print(f"[Planner] unknown reduce task {event.task_id} for job {event.job_id}, ack and skip")
             return
 
-        if event.task_id in state.completed_reduce_task_ids:
+        if task.get("status") == TASK_STATUS_COMPLETED:
             print(f"[Planner] duplicate reduce completion {event.task_id} for job {event.job_id}")
         else:
             self.record_task_completed(event)
-            state.completed_reduce_task_ids.add(event.task_id)
-            print(
-                f"[Planner] reduce completed for job {event.job_id}: "
-                f"{len(state.completed_reduce_task_ids)}/{len(state.reduce_task_ids)}"
-            )
+            tasks = self.list_tasks_for_job(event.job_id)
 
-        if len(state.completed_reduce_task_ids) == len(state.reduce_task_ids) and not state.done:
-            final_result_key = finalize_job(event.job_id, state.bucket)
-            state.done = True
+        reduce_tasks = self.tasks_of_type(tasks, TaskType.REDUCE)
+        completed_reduces = self.completed_count(reduce_tasks)
+        print(f"[Planner] reduce completed for job {event.job_id}: {completed_reduces}/{len(reduce_tasks)}")
+
+        if reduce_tasks and completed_reduces == len(reduce_tasks) and not self.is_job_done(event.job_id):
+            final_result_key = finalize_job(event.job_id, event.bucket)
             print(f"[Planner] all reduce tasks completed for job {event.job_id}. Result: {final_result_key}")
 
     def handle_task_completed(self, ch, event: TaskCompletedEvent) -> None:
@@ -187,13 +242,8 @@ class PlannerService:
         Map and reduce completion events share one queue; task_type chooses
         which phase-specific handler should process the event.
         '''
-        state = self.job_states.get(event.job_id)
-        if state is not None and state.done:
-            print(f"[Planner] completion for already finished job {event.job_id}, ack and skip")
-            return
-
-        if self.is_job_failed(event.job_id):
-            print(f"[Planner] completion for failed job {event.job_id}, ack and skip")
+        if self.is_job_finished(event.job_id):
+            print(f"[Planner] completion for finished job {event.job_id}, ack and skip")
             return
 
         if event.task_type == TaskType.MAP:
@@ -221,10 +271,6 @@ class PlannerService:
         self.record_task_failed(task, message, event_type="dead_lettered")
         self.mark_job_failed(job_id, message)
 
-        state = self.job_states.get(job_id)
-        if state is not None:
-            state.done = True
-
         print(f"[Planner] marked job {job_id} failed because task {task_id} reached dead queue")
 
     def fail_timed_out_tasks(self, timeout_seconds: float, now: float | None = None) -> int:
@@ -247,10 +293,6 @@ class PlannerService:
             message = f"Task {task_id} timed out after {timeout_seconds:g} seconds."
             self.record_task_failed(task, message, event_type="timed_out")
             self.mark_job_failed(job_id, message, completed_at=current_time)
-
-            state = self.job_states.get(job_id)
-            if state is not None:
-                state.done = True
 
             print(f"[Planner] marked job {job_id} failed because task {task_id} timed out")
 
