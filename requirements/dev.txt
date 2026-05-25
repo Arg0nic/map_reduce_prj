@@ -1,0 +1,6 @@
+-r ../api_gateway/requirements.txt
+-r ../planner/requirements.txt
+-r ../worker/requirements.txt
+
+pytest>=8,<9
+httpx>=0.27,<1
