@@ -5,6 +5,7 @@ import time
 import pika
 from pydantic import ValidationError
 
+from planner.config import settings
 from libs.job_repository import create_job_repository
 from libs.models import JobUploadedEvent, TaskCompletedEvent, WorkerTask
 from libs.task_repository import create_task_repository
@@ -16,13 +17,13 @@ QUEUE_JOBS = "jobs"
 HEARTBEAT_QUEUE = "worker.heartbeat"
 TASK_COMPLETED_QUEUE = "task.completed"
 DEAD_TASK_QUEUE = "tasks.dead"
-RUNNING_TASK_TIMEOUT_SECONDS = 300
-RUNNING_TASK_TIMEOUT_CHECK_SECONDS = 30
+RUNNING_TASK_TIMEOUT_SECONDS = settings.RUNNING_TASK_TIMEOUT_SECONDS
+RUNNING_TASK_TIMEOUT_CHECK_SECONDS = settings.RUNNING_TASK_TIMEOUT_CHECK_SECONDS
 
-RABBIT_PASS = "password"
-RABBIT_LOGIN = "admin"
-RABBIT_HOST = "localhost"
-RABBIT_PORT = 5672
+RABBIT_PASS = settings.RABBIT_PASS
+RABBIT_LOGIN = settings.RABBIT_LOGIN
+RABBIT_HOST = settings.RABBIT_HOST
+RABBIT_PORT = settings.RABBIT_PORT
 
 
 PLANNER_SERVICE = None

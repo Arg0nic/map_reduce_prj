@@ -5,8 +5,9 @@ import uuid
 
 import pika
 
+from worker.config import settings as worker_settings
 from libs.models import TaskCompletedEvent, TaskType
-from libs.storage_client.config import settings
+from libs.storage_client.config import settings as storage_settings
 from worker.heartbeat import start_heartbeat_thread
 from worker.task_processing import build_task_paths, process_map_task, process_reduce_task
 
@@ -15,18 +16,18 @@ QUEUE_NAME = "tasks"
 DEAD_QUEUE_NAME = "tasks.dead"
 TASK_COMPLETED_QUEUE = "task.completed"
 WORKER_ID = str(uuid.uuid4())[:8]
-DEFAULT_BUCKET = settings.DEFAULT_BUCKET or "mapreduce-data"
+DEFAULT_BUCKET = storage_settings.DEFAULT_BUCKET or "mapreduce-data"
 CURRENT_TASK = None
 CURRENT_TASK_LOCK = threading.Lock()
 
 
-RABBIT_PASS = "password"
-RABBIT_LOGIN = "admin"
-RABBIT_HOST = "localhost"
-RABBIT_PORT = 5672
+RABBIT_PASS = worker_settings.RABBIT_PASS
+RABBIT_LOGIN = worker_settings.RABBIT_LOGIN
+RABBIT_HOST = worker_settings.RABBIT_HOST
+RABBIT_PORT = worker_settings.RABBIT_PORT
 
 # number of retries for failed tasks
-MAX_RETRIES = 3
+MAX_RETRIES = worker_settings.MAX_RETRIES
 
 
 def set_current_task(task: dict, task_type: TaskType, started_at: float) -> None:

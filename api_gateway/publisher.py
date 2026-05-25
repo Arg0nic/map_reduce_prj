@@ -1,14 +1,15 @@
 import pika
 
+from api_gateway.config import settings
 from libs.models import JobUploadedEvent
 
 
 QUEUE_JOBS = "jobs"
 
-RABBIT_PASS = "password"
-RABBIT_LOGIN = "admin"
-RABBIT_HOST = "localhost"
-RABBIT_PORT = 5672
+RABBIT_PASS = settings.RABBIT_PASS
+RABBIT_LOGIN = settings.RABBIT_LOGIN
+RABBIT_HOST = settings.RABBIT_HOST
+RABBIT_PORT = settings.RABBIT_PORT
 
 
 class RabbitJobEventPublisher:
