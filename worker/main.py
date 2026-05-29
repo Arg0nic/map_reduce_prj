@@ -7,6 +7,7 @@ import pika
 
 from worker.config import settings as worker_settings
 from libs.models import TaskCompletedEvent, TaskType
+from libs.rabbitmq import create_blocking_connection
 from libs.storage_client.config import settings as storage_settings
 from worker.heartbeat import start_heartbeat_thread
 from worker.task_processing import build_task_paths, process_map_task, process_reduce_task
@@ -25,6 +26,8 @@ RABBIT_PASS = worker_settings.RABBIT_PASS
 RABBIT_LOGIN = worker_settings.RABBIT_LOGIN
 RABBIT_HOST = worker_settings.RABBIT_HOST
 RABBIT_PORT = worker_settings.RABBIT_PORT
+RABBIT_CONNECT_RETRIES = worker_settings.RABBIT_CONNECT_RETRIES
+RABBIT_CONNECT_RETRY_DELAY_SECONDS = worker_settings.RABBIT_CONNECT_RETRY_DELAY_SECONDS
 
 # number of retries for failed tasks
 MAX_RETRIES = worker_settings.MAX_RETRIES
@@ -141,14 +144,15 @@ def callback(ch, method, properties, body):
 
 
 def main():
-    credentials = pika.PlainCredentials(RABBIT_LOGIN, RABBIT_PASS)
-    params = pika.ConnectionParameters(
-        host=RABBIT_HOST,
-        port=RABBIT_PORT,
-        virtual_host="/",
-        credentials=credentials,
+    conn = create_blocking_connection(
+        rabbit_login=RABBIT_LOGIN,
+        rabbit_pass=RABBIT_PASS,
+        rabbit_host=RABBIT_HOST,
+        rabbit_port=RABBIT_PORT,
+        service_name=f"Worker {WORKER_ID}",
+        retries=RABBIT_CONNECT_RETRIES,
+        retry_delay_seconds=RABBIT_CONNECT_RETRY_DELAY_SECONDS,
     )
-    conn = pika.BlockingConnection(params)
     ch = conn.channel()
 
     ch.queue_declare(queue=QUEUE_NAME, durable=True)

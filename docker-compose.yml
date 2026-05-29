@@ -1,0 +1,152 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: mapreduce
+      POSTGRES_USER: mapreduce
+      POSTGRES_PASSWORD: mapreduce_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mapreduce -d mapreduce"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: password
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 2; done;
+      mc mb --ignore-existing local/mapreduce-data;
+      "
+
+  migrate:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile
+    image: mapreduce-migrate:dev
+    environment:
+      DATABASE_URL: postgresql+psycopg://mapreduce:mapreduce_password@postgres:5432/mapreduce
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api_gateway:
+    build:
+      context: .
+      dockerfile: api_gateway/Dockerfile
+    image: mapreduce-api-gateway:dev
+    environment:
+      RABBIT_HOST: rabbitmq
+      RABBIT_PORT: 5672
+      RABBIT_LOGIN: admin
+      RABBIT_PASS: password
+      JOB_REPOSITORY_BACKEND: postgres
+      DATABASE_URL: postgresql+psycopg://mapreduce:mapreduce_password@postgres:5432/mapreduce
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECURE: "false"
+      MINIO_BUCKET: mapreduce-data
+    ports:
+      - "8000:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+
+  planner:
+    build:
+      context: .
+      dockerfile: planner/Dockerfile
+    image: mapreduce-planner:dev
+    environment:
+      RABBIT_HOST: rabbitmq
+      RABBIT_PORT: 5672
+      RABBIT_LOGIN: admin
+      RABBIT_PASS: password
+      RABBIT_CONNECT_RETRIES: 30
+      RABBIT_CONNECT_RETRY_DELAY_SECONDS: 2
+      JOB_REPOSITORY_BACKEND: postgres
+      TASK_REPOSITORY_BACKEND: postgres
+      DATABASE_URL: postgresql+psycopg://mapreduce:mapreduce_password@postgres:5432/mapreduce
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECURE: "false"
+      MINIO_BUCKET: mapreduce-data
+      RUNNING_TASK_TIMEOUT_SECONDS: 300
+      RUNNING_TASK_TIMEOUT_CHECK_SECONDS: 30
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    image: mapreduce-worker:dev
+    environment:
+      RABBIT_HOST: rabbitmq
+      RABBIT_PORT: 5672
+      RABBIT_LOGIN: admin
+      RABBIT_PASS: password
+      RABBIT_CONNECT_RETRIES: 30
+      RABBIT_CONNECT_RETRY_DELAY_SECONDS: 2
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECURE: "false"
+      MINIO_BUCKET: mapreduce-data
+      WORKER_MAX_RETRIES: 3
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:
+  minio-data:

@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from planner.config import settings
 from libs.job_repository import create_job_repository
 from libs.models import JobUploadedEvent, TaskCompletedEvent, WorkerTask
+from libs.rabbitmq import create_blocking_connection
 from libs.task_repository import create_task_repository
 from planner.service import PlannerService
 from planner.task_planner import QUEUE_TASKS
@@ -24,6 +25,8 @@ RABBIT_PASS = settings.RABBIT_PASS
 RABBIT_LOGIN = settings.RABBIT_LOGIN
 RABBIT_HOST = settings.RABBIT_HOST
 RABBIT_PORT = settings.RABBIT_PORT
+RABBIT_CONNECT_RETRIES = settings.RABBIT_CONNECT_RETRIES
+RABBIT_CONNECT_RETRY_DELAY_SECONDS = settings.RABBIT_CONNECT_RETRY_DELAY_SECONDS
 
 
 PLANNER_SERVICE = None
@@ -167,14 +170,15 @@ def main():
     Planner owns the consumer side of orchestration queues and publishes
     worker tasks through the same RabbitMQ channel.
     '''
-    credentials = pika.PlainCredentials(RABBIT_LOGIN, RABBIT_PASS)
-    params = pika.ConnectionParameters(
-        host=RABBIT_HOST,
-        port=RABBIT_PORT,
-        virtual_host="/",
-        credentials=credentials,
+    conn = create_blocking_connection(
+        rabbit_login=RABBIT_LOGIN,
+        rabbit_pass=RABBIT_PASS,
+        rabbit_host=RABBIT_HOST,
+        rabbit_port=RABBIT_PORT,
+        service_name="Planner",
+        retries=RABBIT_CONNECT_RETRIES,
+        retry_delay_seconds=RABBIT_CONNECT_RETRY_DELAY_SECONDS,
     )
-    conn = pika.BlockingConnection(params)
     ch = conn.channel()
     ch.queue_declare(queue=QUEUE_TASKS, durable=True)
     ch.queue_declare(queue=HEARTBEAT_QUEUE, durable=False)
