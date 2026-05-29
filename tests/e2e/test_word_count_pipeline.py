@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
+import subprocess
 import time
 
 import httpx
@@ -8,6 +9,7 @@ import pytest
 
 
 pytestmark = pytest.mark.e2e
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 if os.getenv("RUN_E2E") != "1":
@@ -26,11 +28,72 @@ POLL_INTERVAL_SECONDS = float(os.getenv("E2E_POLL_INTERVAL_SECONDS", "1"))
 LARGE_FILE_SIZE_BYTES = int(os.getenv("E2E_LARGE_FILE_SIZE_BYTES", str(1024 * 1024 * 1024)))
 MANY_JOBS_COUNT = int(os.getenv("E2E_MANY_JOBS_COUNT", "20"))
 MANY_JOBS_MAX_WORKERS = int(os.getenv("E2E_MANY_JOBS_MAX_WORKERS", "8"))
+RESILIENCE_FILE_SIZE_BYTES = int(
+    os.getenv("E2E_RESILIENCE_FILE_SIZE_BYTES", str(256 * 1024 * 1024))
+)
+RESILIENCE_WORKER_COUNT = int(os.getenv("E2E_RESILIENCE_WORKER_COUNT", "5"))
+RESILIENCE_KILL_COUNT = int(os.getenv("E2E_RESILIENCE_KILL_COUNT", "2"))
+RESILIENCE_KILL_DELAY_SECONDS = float(os.getenv("E2E_RESILIENCE_KILL_DELAY_SECONDS", "3"))
+RESILIENCE_JOB_TIMEOUT_SECONDS = float(os.getenv("E2E_RESILIENCE_JOB_TIMEOUT_SECONDS", "900"))
 
 
 def require_stress_e2e_enabled() -> None:
     if os.getenv("RUN_STRESS_E2E") != "1":
         pytest.skip("Set RUN_STRESS_E2E=1 to run stress e2e tests.")
+
+
+def require_resilience_e2e_enabled() -> None:
+    if os.getenv("RUN_RESILIENCE_E2E") != "1":
+        pytest.skip("Set RUN_RESILIENCE_E2E=1 to run resilience e2e tests.")
+
+
+def run_compose_command(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["docker", "compose", *args],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def running_worker_container_ids() -> list[str]:
+    result = run_compose_command("ps", "-q", "--status", "running", "worker")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def scale_workers(worker_count: int) -> None:
+    run_compose_command(
+        "up",
+        "-d",
+        "--no-deps",
+        "--scale",
+        f"worker={worker_count}",
+        "worker",
+    )
+
+
+def wait_for_worker_count(worker_count: int, timeout_seconds: float = 60) -> list[str]:
+    deadline = time.monotonic() + timeout_seconds
+
+    while time.monotonic() < deadline:
+        worker_ids = running_worker_container_ids()
+        if len(worker_ids) >= worker_count:
+            return worker_ids
+        time.sleep(1)
+
+    pytest.fail(f"Expected {worker_count} running workers, found {len(running_worker_container_ids())}.")
+
+
+def kill_worker_containers(container_ids: list[str]) -> None:
+    if container_ids:
+        subprocess.run(
+            ["docker", "kill", *container_ids],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 
 def wait_for_api_ready(client: httpx.Client) -> None:
@@ -252,3 +315,42 @@ def test_many_concurrent_jobs_stress_e2e() -> None:
 
     for result, (_filename, _input_text, expected_result) in zip(results, jobs):
         assert result == expected_result
+
+
+@pytest.mark.resilience_e2e
+def test_job_completes_after_some_workers_are_killed_e2e(tmp_path: Path) -> None:
+    require_resilience_e2e_enabled()
+
+    original_worker_count = max(1, len(running_worker_container_ids()))
+    active_worker_count = max(2, RESILIENCE_WORKER_COUNT)
+    kill_count = min(RESILIENCE_KILL_COUNT, active_worker_count - 1)
+
+    large_input_path = tmp_path / "worker_crash_input.txt"
+    line_count = write_repeated_line_file(large_input_path, RESILIENCE_FILE_SIZE_BYTES)
+    expected_result = {
+        "alpha": line_count,
+        "beta": line_count * 2,
+        "delta": line_count,
+        "gamma": line_count,
+    }
+
+    try:
+        scale_workers(active_worker_count)
+        worker_ids = wait_for_worker_count(active_worker_count)
+
+        with httpx.Client(timeout=10) as client:
+            wait_for_api_ready(client)
+            job_id = upload_file_path("worker_crash_input.txt", large_input_path)
+
+            time.sleep(RESILIENCE_KILL_DELAY_SECONDS)
+            kill_worker_containers(worker_ids[:kill_count])
+
+            result = wait_for_job_result(
+                client,
+                job_id,
+                timeout_seconds=RESILIENCE_JOB_TIMEOUT_SECONDS,
+            )
+
+        assert result == expected_result
+    finally:
+        scale_workers(original_worker_count)
