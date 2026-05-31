@@ -38,6 +38,19 @@ def make_properties(headers: dict | None = None):
     return SimpleNamespace(headers=headers)
 
 
+def test_create_worker_id_uses_container_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOSTNAME", "container-abc123")
+
+    assert worker_main.create_worker_id() == "container-abc123"
+
+
+def test_create_worker_id_falls_back_to_short_uuid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HOSTNAME", raising=False)
+    monkeypatch.setattr(worker_main.uuid, "uuid4", lambda: "12345678-1234-5678-1234-567812345678")
+
+    assert worker_main.create_worker_id() == "12345678"
+
+
 def test_current_task_snapshot_returns_running_task(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_main, "DEFAULT_BUCKET", "bucket-default")
     task = {
