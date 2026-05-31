@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 import uuid
@@ -16,7 +17,6 @@ from worker.task_processing import build_task_paths, process_map_task, process_r
 QUEUE_NAME = "tasks"
 DEAD_QUEUE_NAME = "tasks.dead"
 TASK_COMPLETED_QUEUE = "task.completed"
-WORKER_ID = str(uuid.uuid4())[:8]
 DEFAULT_BUCKET = storage_settings.DEFAULT_BUCKET or "mapreduce-data"
 CURRENT_TASK = None
 CURRENT_TASK_LOCK = threading.Lock()
@@ -31,6 +31,13 @@ RABBIT_CONNECT_RETRY_DELAY_SECONDS = worker_settings.RABBIT_CONNECT_RETRY_DELAY_
 
 # number of retries for failed tasks
 MAX_RETRIES = worker_settings.MAX_RETRIES
+
+
+def create_worker_id() -> str:
+    return os.getenv("HOSTNAME") or str(uuid.uuid4())[:8]
+
+
+WORKER_ID = create_worker_id()
 
 
 def set_current_task(task: dict, task_type: TaskType, started_at: float) -> None:
