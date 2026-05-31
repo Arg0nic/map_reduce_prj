@@ -6,6 +6,7 @@ import time
 
 import httpx
 import pytest
+from sqlalchemy import create_engine, text
 
 
 pytestmark = pytest.mark.e2e
@@ -20,6 +21,10 @@ if os.getenv("RUN_E2E") != "1":
 
 
 API_BASE_URL = os.getenv("E2E_API_BASE_URL", "http://localhost:8000")
+DATABASE_URL = os.getenv(
+    "E2E_DATABASE_URL",
+    "postgresql+psycopg://mapreduce:mapreduce_password@localhost:5432/mapreduce",
+)
 API_READY_TIMEOUT_SECONDS = float(os.getenv("E2E_API_READY_TIMEOUT_SECONDS", "30"))
 JOB_TIMEOUT_SECONDS = float(os.getenv("E2E_JOB_TIMEOUT_SECONDS", "90"))
 STRESS_JOB_TIMEOUT_SECONDS = float(os.getenv("E2E_STRESS_JOB_TIMEOUT_SECONDS", "1800"))
@@ -62,6 +67,22 @@ def running_worker_container_ids() -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def find_running_worker_container_id(worker_id: str) -> str | None:
+    for container_id in running_worker_container_ids():
+        if container_id.startswith(worker_id) or worker_id.startswith(container_id):
+            return container_id
+
+    result = subprocess.run(
+        ["docker", "ps", "-q", "--filter", f"id={worker_id}"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    matches = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return matches[0] if matches else None
+
+
 def scale_workers(worker_count: int) -> None:
     run_compose_command(
         "up",
@@ -94,6 +115,31 @@ def kill_worker_containers(container_ids: list[str]) -> None:
             capture_output=True,
             text=True,
         )
+
+
+def wait_for_running_task(job_id: str, timeout_seconds: float = 60) -> dict[str, str]:
+    engine = create_engine(DATABASE_URL)
+    deadline = time.monotonic() + timeout_seconds
+    query = text(
+        """
+        SELECT task_id, type, worker_id
+        FROM tasks
+        WHERE job_id = :job_id
+          AND status = 'running'
+          AND worker_id IS NOT NULL
+        ORDER BY started_at, task_id
+        LIMIT 1
+        """
+    )
+
+    while time.monotonic() < deadline:
+        with engine.connect() as connection:
+            row = connection.execute(query, {"job_id": job_id}).mappings().first()
+        if row is not None:
+            return dict(row)
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+    pytest.fail(f"No running task was recorded for job {job_id} in {timeout_seconds:g} seconds.")
 
 
 def wait_for_api_ready(client: httpx.Client) -> None:
@@ -342,8 +388,21 @@ def test_job_completes_after_some_workers_are_killed_e2e(tmp_path: Path) -> None
             wait_for_api_ready(client)
             job_id = upload_file_path("worker_crash_input.txt", large_input_path)
 
+            running_task = wait_for_running_task(job_id)
+            worker_container_id = find_running_worker_container_id(running_task["worker_id"])
+            if worker_container_id is None:
+                pytest.fail(
+                    "Running task worker_id does not match a running Docker worker container: "
+                    f"{running_task}"
+                )
+
             time.sleep(RESILIENCE_KILL_DELAY_SECONDS)
-            kill_worker_containers(worker_ids[:kill_count])
+            extra_container_ids = [
+                container_id
+                for container_id in running_worker_container_ids()
+                if container_id != worker_container_id
+            ][: max(0, kill_count - 1)]
+            kill_worker_containers([worker_container_id, *extra_container_ids])
 
             result = wait_for_job_result(
                 client,
