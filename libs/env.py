@@ -26,4 +26,11 @@ def bool_env(name: str, default: bool = False) -> bool:
     value = getenv(name)
     if value is None or value.strip() == "":
         return default
-    return value.lower() in ("1", "true", "yes")
+
+    normalized = value.strip().lower()
+    if normalized in ("1", "true", "yes"):
+        return True
+    if normalized in ("0", "false", "no"):
+        return False
+
+    raise ValueError(f"{name} must be a boolean value: true/false, yes/no, or 1/0.")

@@ -60,3 +60,14 @@ def test_bool_env_parses_common_values(
     monkeypatch.setenv("BOOL_SETTING", value)
 
     assert bool_env("BOOL_SETTING") is expected
+
+
+@pytest.mark.parametrize("value", ["tru", "maybe", "2"])
+def test_bool_env_rejects_invalid_values(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("BOOL_SETTING", value)
+
+    with pytest.raises(ValueError, match="BOOL_SETTING must be a boolean value"):
+        bool_env("BOOL_SETTING")
