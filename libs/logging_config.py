@@ -13,6 +13,12 @@ VALID_LOG_LEVELS = {
     "INFO": logging.INFO,
     "DEBUG": logging.DEBUG,
 }
+NOISY_LOGGERS = {
+    "boto3": logging.WARNING,
+    "botocore": logging.WARNING,
+    "pika": logging.WARNING,
+    "urllib3": logging.WARNING,
+}
 
 
 class ServiceNameFilter(logging.Filter):
@@ -45,6 +51,9 @@ def configure_logging(service_name: str, level: str | None = None) -> None:
     root_logger.handlers.clear()
     root_logger.addHandler(handler)
     root_logger.setLevel(parse_log_level(level))
+
+    for logger_name, logger_level in NOISY_LOGGERS.items():
+        logging.getLogger(logger_name).setLevel(logger_level)
 
 
 def format_log_fields(**fields: Any) -> str:

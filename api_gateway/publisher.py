@@ -1,6 +1,9 @@
+import logging
+
 import pika
 
 from api_gateway.config import settings
+from libs.logging_config import format_log_fields
 from libs.models import JobUploadedEvent
 
 
@@ -10,6 +13,7 @@ RABBIT_PASS = settings.RABBIT_PASS
 RABBIT_LOGIN = settings.RABBIT_LOGIN
 RABBIT_HOST = settings.RABBIT_HOST
 RABBIT_PORT = settings.RABBIT_PORT
+logger = logging.getLogger(__name__)
 
 
 class RabbitJobEventPublisher:
@@ -41,6 +45,15 @@ class RabbitJobEventPublisher:
         try:
             conn = pika.BlockingConnection(params)
         except pika.exceptions.AMQPError as exc:
+            logger.exception(
+                "failed to connect to RabbitMQ for job event publish %s",
+                format_log_fields(
+                    job_id=event.job_id,
+                    queue=self.queue_name,
+                    rabbit_host=self.rabbit_host,
+                    rabbit_port=self.rabbit_port,
+                ),
+            )
             raise RuntimeError("Failed to connect to RabbitMQ.") from exc
 
         try:
@@ -55,7 +68,20 @@ class RabbitJobEventPublisher:
                     content_type="application/json",
                 ),
             )
+            logger.info(
+                "published job uploaded event %s",
+                format_log_fields(
+                    job_id=event.job_id,
+                    queue=self.queue_name,
+                    bucket=event.bucket,
+                    chunks_prefix=event.chunks_prefix,
+                ),
+            )
         except pika.exceptions.AMQPError as exc:
+            logger.exception(
+                "failed to publish job uploaded event %s",
+                format_log_fields(job_id=event.job_id, queue=self.queue_name),
+            )
             raise RuntimeError("Failed to publish job event to RabbitMQ.") from exc
         finally:
             conn.close()

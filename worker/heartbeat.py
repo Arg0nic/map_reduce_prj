@@ -1,13 +1,17 @@
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
 
 import pika
 
+from libs.logging_config import format_log_fields
+
 
 HEARTBEAT_QUEUE = "worker.heartbeat"
 HEARTBEAT_INTERVAL_SECONDS = 3
+logger = logging.getLogger(__name__)
 
 
 def heartbeat_loop(
@@ -61,6 +65,10 @@ def start_heartbeat_thread(
 ) -> threading.Thread:
     # Heartbeats run in a daemon thread so the worker can exit cleanly when the
     # main process stops consuming tasks.
+    logger.info(
+        "starting heartbeat thread %s",
+        format_log_fields(worker_id=worker_id, interval_seconds=interval_seconds),
+    )
     thread = threading.Thread(
         target=heartbeat_loop,
         kwargs={

@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 import time
 import uuid
@@ -6,6 +7,7 @@ from typing import BinaryIO, Callable, Iterator, Protocol
 
 from api_gateway.publisher import RabbitJobEventPublisher
 from libs.job_repository import AbstractJobRepository, create_job_repository
+from libs.logging_config import format_log_fields
 from libs.models import ChunkInfo, Job, JobStatus, JobUploadedEvent
 from libs.storage_client.client import upload_bytes
 from libs.storage_client.config import settings
@@ -14,6 +16,7 @@ from libs.storage_client.paths import chunks_prefix
 
 DEFAULT_BUCKET = settings.DEFAULT_BUCKET or "mapreduce-data"
 DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
+logger = logging.getLogger(__name__)
 
 
 class JobEventPublisher(Protocol):
@@ -97,6 +100,16 @@ class ChunkUploader:
         if not chunks:
             raise ValueError("Input file is empty.")
 
+        logger.info(
+            "uploaded input chunks %s",
+            format_log_fields(
+                job_id=job_id,
+                bucket=active_bucket,
+                chunk_count=len(chunks),
+                total_bytes=total_bytes,
+            ),
+        )
+
         # Manifest tells Planner which S3 objects belong to this job.
         return {
             "chunk_count": len(chunks),
@@ -176,6 +189,17 @@ class JobService:
             created_at=job["submitted_at"],
         )
         self.event_publisher.publish_job_uploaded(event)
+
+        logger.info(
+            "created job from upload %s",
+            format_log_fields(
+                job_id=job_id,
+                filename=job["original_filename"],
+                bucket=active_bucket,
+                chunk_count=job["chunk_count"],
+                total_bytes=job["total_bytes"],
+            ),
+        )
 
         return job
     

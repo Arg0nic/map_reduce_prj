@@ -1,8 +1,9 @@
 import logging
+import sys
 
 import pytest
 
-from libs.logging_config import format_log_fields, parse_log_level
+from libs.logging_config import configure_logging, format_log_fields, parse_log_level
 
 
 @pytest.mark.parametrize(
@@ -36,3 +37,16 @@ def test_format_log_fields_uses_key_value_pairs() -> None:
 
 def test_format_log_fields_quotes_values_with_spaces() -> None:
     assert format_log_fields(message="hello world") == "message='hello world'"
+
+
+def test_configure_logging_sends_logs_to_stdout_and_quiets_noisy_dependencies() -> None:
+    configure_logging("test-service", level="INFO")
+
+    root_logger = logging.getLogger()
+    assert len(root_logger.handlers) == 1
+    assert root_logger.handlers[0].stream is sys.stdout
+    assert root_logger.level == logging.INFO
+    assert logging.getLogger("pika").level == logging.WARNING
+    assert logging.getLogger("boto3").level == logging.WARNING
+    assert logging.getLogger("botocore").level == logging.WARNING
+    assert logging.getLogger("urllib3").level == logging.WARNING
