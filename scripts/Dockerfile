@@ -10,6 +10,7 @@ COPY planner/requirements.txt planner/requirements.txt
 RUN pip install --no-cache-dir -r planner/requirements.txt
 
 COPY scripts/run_migrations.py scripts/run_migrations.py
+COPY libs/*.py libs/
 COPY migrations/*.sql migrations/
 
 CMD ["python", "scripts/run_migrations.py"]

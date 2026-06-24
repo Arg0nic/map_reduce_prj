@@ -57,6 +57,7 @@ services:
       dockerfile: scripts/Dockerfile
     image: mapreduce-migrate:dev
     environment:
+      LOG_LEVEL: INFO
       DATABASE_URL: postgresql+psycopg://mapreduce:mapreduce_password@postgres:5432/mapreduce
     depends_on:
       postgres:
@@ -103,6 +104,7 @@ services:
       RABBIT_PASS: password
       RABBIT_CONNECT_RETRIES: 30
       RABBIT_CONNECT_RETRY_DELAY_SECONDS: 2
+      LOG_LEVEL: INFO
       JOB_REPOSITORY_BACKEND: postgres
       TASK_REPOSITORY_BACKEND: postgres
       DATABASE_URL: postgresql+psycopg://mapreduce:mapreduce_password@postgres:5432/mapreduce
@@ -135,6 +137,7 @@ services:
       RABBIT_PASS: password
       RABBIT_CONNECT_RETRIES: 30
       RABBIT_CONNECT_RETRY_DELAY_SECONDS: 2
+      LOG_LEVEL: INFO
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin

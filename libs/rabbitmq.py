@@ -1,6 +1,12 @@
+import logging
 import time
 
 import pika
+
+from libs.logging_config import format_log_fields
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_blocking_connection(
@@ -27,9 +33,14 @@ def create_blocking_connection(
         except pika.exceptions.AMQPConnectionError:
             if attempt == attempts:
                 raise
-            print(
-                f"[{service_name}] RabbitMQ is not ready "
-                f"({attempt}/{attempts}), retrying in {retry_delay_seconds:g}s"
+            logger.warning(
+                "RabbitMQ is not ready, retrying %s",
+                format_log_fields(
+                    service=service_name,
+                    attempt=attempt,
+                    max_attempts=attempts,
+                    retry_delay_seconds=retry_delay_seconds,
+                ),
             )
             time.sleep(retry_delay_seconds)
 

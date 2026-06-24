@@ -1,15 +1,17 @@
 import json
+import logging
 import threading
 import time
 
 import pika
 from pydantic import ValidationError
 
-from planner.config import settings
 from libs.job_repository import create_job_repository
+from libs.logging_config import configure_logging, format_log_fields
 from libs.models import JobUploadedEvent, TaskCompletedEvent, WorkerTask
 from libs.rabbitmq import create_blocking_connection
 from libs.task_repository import create_task_repository
+from planner.config import settings
 from planner.service import PlannerService
 from planner.task_planner import QUEUE_TASKS
 
@@ -30,6 +32,7 @@ RABBIT_CONNECT_RETRY_DELAY_SECONDS = settings.RABBIT_CONNECT_RETRY_DELAY_SECONDS
 
 
 PLANNER_SERVICE = None
+logger = logging.getLogger(__name__)
 
 
 def get_planner_service() -> PlannerService:
@@ -52,7 +55,7 @@ def heartbeat_callback(ch, method, properties, body):
     try:
         heartbeat = json.loads(body)
     except Exception:
-        print("[Planner] invalid heartbeat message, ack and skip")
+        logger.warning("invalid heartbeat message, ack and skip")
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
@@ -60,16 +63,19 @@ def heartbeat_callback(ch, method, properties, body):
     timestamp = heartbeat.get("ts")
 
     if timestamp is None:
-        print(f"[Planner] heartbeat from {worker_id} without timestamp")
+        logger.warning("worker heartbeat without timestamp %s", format_log_fields(worker_id=worker_id))
     else:
         readable_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
-        print(f"[Planner] heartbeat from {worker_id} at {readable_time}")
+        logger.info(
+            "worker heartbeat %s",
+            format_log_fields(worker_id=worker_id, timestamp=readable_time),
+        )
 
     if isinstance(heartbeat.get("current_task"), dict):
         try:
             get_planner_service().handle_worker_heartbeat(heartbeat)
         except Exception as exc:
-            print(f"[Planner] failed to handle heartbeat from {worker_id}: {exc}")
+            logger.exception("failed to handle heartbeat %s", format_log_fields(worker_id=worker_id))
 
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -85,14 +91,14 @@ def job_callback(ch, method, properties, body):
         payload = json.loads(body)
         event = JobUploadedEvent.model_validate(payload)
     except (json.JSONDecodeError, TypeError, ValidationError):
-        print("api_gateway sent invalid job event, ack and skip")
+        logger.warning("api_gateway sent invalid job event, ack and skip")
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
     try:
         get_planner_service().handle_job_uploaded(ch, event)
     except Exception as exc:
-        print(f"[Planner] failed to create tasks for job {event.job_id}: {exc}")
+        logger.exception("failed to create tasks %s", format_log_fields(job_id=event.job_id))
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         return
 
@@ -110,14 +116,17 @@ def task_completed_callback(ch, method, properties, body):
         payload = json.loads(body)
         event = TaskCompletedEvent.model_validate(payload)
     except (json.JSONDecodeError, TypeError, ValidationError):
-        print("[Planner] invalid task completion event, ack and skip")
+        logger.warning("invalid task completion event, ack and skip")
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
     try:
         get_planner_service().handle_task_completed(ch, event)
     except Exception as exc:
-        print(f"[Planner] failed to handle task completion for job {event.job_id}: {exc}")
+        logger.exception(
+            "failed to handle task completion %s",
+            format_log_fields(job_id=event.job_id, task_id=event.task_id),
+        )
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         return
 
@@ -132,14 +141,14 @@ def task_dead_callback(ch, method, properties, body):
         payload = json.loads(body)
         task = WorkerTask.model_validate(payload).model_dump(mode="json")
     except (json.JSONDecodeError, TypeError, ValidationError):
-        print("[Planner] invalid dead task message, ack and skip")
+        logger.warning("invalid dead task message, ack and skip")
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
     try:
         get_planner_service().handle_task_dead(task)
     except Exception as exc:
-        print(f"[Planner] failed to handle dead task {task.get('task_id')}: {exc}")
+        logger.exception("failed to handle dead task %s", format_log_fields(task_id=task.get("task_id")))
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         return
 
@@ -156,7 +165,7 @@ def start_task_timeout_monitor():
             try:
                 get_planner_service().fail_timed_out_tasks(RUNNING_TASK_TIMEOUT_SECONDS)
             except Exception as exc:
-                print(f"[Planner] failed to check running task timeouts: {exc}")
+                logger.exception("failed to check running task timeouts")
 
     thread = threading.Thread(target=monitor, daemon=True)
     thread.start()
@@ -170,6 +179,8 @@ def main():
     Planner owns the consumer side of orchestration queues and publishes
     worker tasks through the same RabbitMQ channel.
     '''
+    configure_logging("planner")
+
     conn = create_blocking_connection(
         rabbit_login=RABBIT_LOGIN,
         rabbit_pass=RABBIT_PASS,
@@ -191,7 +202,7 @@ def main():
     ch.basic_consume(queue=TASK_COMPLETED_QUEUE, on_message_callback=task_completed_callback, auto_ack=False)
     ch.basic_consume(queue=DEAD_TASK_QUEUE, on_message_callback=task_dead_callback, auto_ack=False)
     start_task_timeout_monitor()
-    print("[Planner] listening for jobs, task completions, dead tasks, and worker heartbeats. Press CTRL+C to stop.")
+    logger.info("listening for jobs, task completions, dead tasks, and worker heartbeats")
 
     try:
         ch.start_consuming()

@@ -1,6 +1,8 @@
+import logging
 import time
 
 from libs.job_repository import AbstractJobRepository
+from libs.logging_config import format_log_fields
 from libs.models import JobStatus, JobUploadedEvent, TaskCompletedEvent, TaskType
 from libs.task_repository import AbstractTaskRepository
 from planner.finalizer import finalize_job
@@ -8,6 +10,7 @@ from planner.task_planner import create_map_tasks_for_job, create_reduce_tasks_f
 
 
 TASK_STATUS_COMPLETED = "completed"
+logger = logging.getLogger(__name__)
 
 
 class PlannerService:
@@ -123,7 +126,7 @@ class PlannerService:
         '''
         existing_tasks = self.list_tasks_for_job(event.job_id)
         if existing_tasks:
-            print(f"[Planner] job {event.job_id} already has planned tasks, ack and skip")
+            logger.info("job already has planned tasks, ack and skip %s", format_log_fields(job_id=event.job_id))
             return
 
         tasks = create_map_tasks_for_job(ch, event)
@@ -133,7 +136,7 @@ class PlannerService:
             planner_status="map_running",
             message=f"Planner published {len(tasks)} map tasks.",
         )
-        print(f"[Planner] planned {len(tasks)} map tasks for job {event.job_id}")
+        logger.info("planned map tasks %s", format_log_fields(job_id=event.job_id, task_count=len(tasks)))
 
     def start_reduce_phase(self, ch, job_id: str, bucket: str) -> None:
         '''
@@ -144,7 +147,7 @@ class PlannerService:
         '''
         existing_tasks = self.list_tasks_for_job(job_id)
         if self.tasks_of_type(existing_tasks, TaskType.REDUCE):
-            print(f"[Planner] reduce phase for job {job_id} is already planned, ack and skip")
+            logger.info("reduce phase already planned, ack and skip %s", format_log_fields(job_id=job_id))
             return
 
         tasks = create_reduce_tasks_for_job(ch, job_id, bucket)
@@ -154,7 +157,7 @@ class PlannerService:
             planner_status="reduce_running",
             message=f"Planner published {len(tasks)} reduce tasks.",
         )
-        print(f"[Planner] planned {len(tasks)} reduce tasks for job {job_id}")
+        logger.info("planned reduce tasks %s", format_log_fields(job_id=job_id, task_count=len(tasks)))
 
     def handle_worker_heartbeat(self, heartbeat: dict) -> None:
         '''
@@ -176,7 +179,16 @@ class PlannerService:
             "part_num": current_task.get("part_num"),
         }
         self.record_task_started(task, worker_id=worker_id, started_at=started_at)
-        print(f"[Planner] heartbeat reports task {task['task_id']} running on worker {worker_id}")
+        logger.info(
+            "heartbeat reports running task %s",
+            format_log_fields(
+                job_id=task.get("job_id"),
+                task_id=task.get("task_id"),
+                task_type=task.get("type"),
+                worker_id=worker_id,
+                part_num=task.get("part_num"),
+            ),
+        )
 
     def handle_map_completed(self, ch, event: TaskCompletedEvent) -> None:
         '''
@@ -189,11 +201,17 @@ class PlannerService:
         task = self.find_task(tasks, event.task_id, TaskType.MAP)
 
         if task is None:
-            print(f"[Planner] unknown map task {event.task_id} for job {event.job_id}, ack and skip")
+            logger.warning(
+                "unknown map task completion, ack and skip %s",
+                format_log_fields(job_id=event.job_id, task_id=event.task_id),
+            )
             return
 
         if task.get("status") == TASK_STATUS_COMPLETED:
-            print(f"[Planner] duplicate map completion {event.task_id} for job {event.job_id}")
+            logger.info(
+                "duplicate map completion %s",
+                format_log_fields(job_id=event.job_id, task_id=event.task_id),
+            )
         else:
             self.record_task_completed(event)
             tasks = self.list_tasks_for_job(event.job_id)
@@ -201,10 +219,18 @@ class PlannerService:
         map_tasks = self.tasks_of_type(tasks, TaskType.MAP)
         reduce_tasks = self.tasks_of_type(tasks, TaskType.REDUCE)
         completed_maps = self.completed_count(map_tasks)
-        print(f"[Planner] map completed for job {event.job_id}: {completed_maps}/{len(map_tasks)}")
+        logger.info(
+            "map task completed %s",
+            format_log_fields(
+                job_id=event.job_id,
+                task_id=event.task_id,
+                completed_maps=completed_maps,
+                total_maps=len(map_tasks),
+            ),
+        )
 
         if map_tasks and completed_maps == len(map_tasks) and not reduce_tasks:
-            print(f"[Planner] all map tasks completed for job {event.job_id}. Starting reduce phase.")
+            logger.info("all map tasks completed, starting reduce phase %s", format_log_fields(job_id=event.job_id))
             self.start_reduce_phase(ch, event.job_id, event.bucket)
 
     def handle_reduce_completed(self, event: TaskCompletedEvent) -> None:
@@ -218,22 +244,39 @@ class PlannerService:
         task = self.find_task(tasks, event.task_id, TaskType.REDUCE)
 
         if task is None:
-            print(f"[Planner] unknown reduce task {event.task_id} for job {event.job_id}, ack and skip")
+            logger.warning(
+                "unknown reduce task completion, ack and skip %s",
+                format_log_fields(job_id=event.job_id, task_id=event.task_id),
+            )
             return
 
         if task.get("status") == TASK_STATUS_COMPLETED:
-            print(f"[Planner] duplicate reduce completion {event.task_id} for job {event.job_id}")
+            logger.info(
+                "duplicate reduce completion %s",
+                format_log_fields(job_id=event.job_id, task_id=event.task_id),
+            )
         else:
             self.record_task_completed(event)
             tasks = self.list_tasks_for_job(event.job_id)
 
         reduce_tasks = self.tasks_of_type(tasks, TaskType.REDUCE)
         completed_reduces = self.completed_count(reduce_tasks)
-        print(f"[Planner] reduce completed for job {event.job_id}: {completed_reduces}/{len(reduce_tasks)}")
+        logger.info(
+            "reduce task completed %s",
+            format_log_fields(
+                job_id=event.job_id,
+                task_id=event.task_id,
+                completed_reduces=completed_reduces,
+                total_reduces=len(reduce_tasks),
+            ),
+        )
 
         if reduce_tasks and completed_reduces == len(reduce_tasks) and not self.is_job_done(event.job_id):
             final_result_key = finalize_job(event.job_id, event.bucket)
-            print(f"[Planner] all reduce tasks completed for job {event.job_id}. Result: {final_result_key}")
+            logger.info(
+                "all reduce tasks completed, finalized job %s",
+                format_log_fields(job_id=event.job_id, result_key=final_result_key),
+            )
 
     def handle_task_completed(self, ch, event: TaskCompletedEvent) -> None:
         '''
@@ -243,7 +286,7 @@ class PlannerService:
         which phase-specific handler should process the event.
         '''
         if self.is_job_finished(event.job_id):
-            print(f"[Planner] completion for finished job {event.job_id}, ack and skip")
+            logger.info("completion for finished job, ack and skip %s", format_log_fields(job_id=event.job_id))
             return
 
         if event.task_type == TaskType.MAP:
@@ -251,7 +294,10 @@ class PlannerService:
         elif event.task_type == TaskType.REDUCE:
             self.handle_reduce_completed(event)
         else:
-            print(f"[Planner] unknown completed task type {event.task_type}, ack and skip")
+            logger.warning(
+                "unknown completed task type, ack and skip %s",
+                format_log_fields(job_id=event.job_id, task_id=event.task_id, task_type=event.task_type),
+            )
 
     def handle_task_dead(self, task: dict) -> None:
         '''
@@ -271,7 +317,10 @@ class PlannerService:
         self.record_task_failed(task, message, event_type="dead_lettered")
         self.mark_job_failed(job_id, message)
 
-        print(f"[Planner] marked job {job_id} failed because task {task_id} reached dead queue")
+        logger.warning(
+            "marked job failed because task reached dead queue %s",
+            format_log_fields(job_id=job_id, task_id=task_id, task_type=task_type),
+        )
 
     def fail_timed_out_tasks(self, timeout_seconds: float, now: float | None = None) -> int:
         '''
@@ -294,6 +343,9 @@ class PlannerService:
             self.record_task_failed(task, message, event_type="timed_out")
             self.mark_job_failed(job_id, message, completed_at=current_time)
 
-            print(f"[Planner] marked job {job_id} failed because task {task_id} timed out")
+            logger.warning(
+                "marked job failed because task timed out %s",
+                format_log_fields(job_id=job_id, task_id=task_id, timeout_seconds=timeout_seconds),
+            )
 
         return len(timed_out_tasks)

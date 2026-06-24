@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import threading
 import time
@@ -6,10 +7,11 @@ import uuid
 
 import pika
 
-from worker.config import settings as worker_settings
+from libs.logging_config import configure_logging, format_log_fields
 from libs.models import TaskCompletedEvent, TaskType
 from libs.rabbitmq import create_blocking_connection
 from libs.storage_client.config import settings as storage_settings
+from worker.config import settings as worker_settings
 from worker.heartbeat import start_heartbeat_thread
 from worker.task_processing import build_task_paths, process_map_task, process_reduce_task
 
@@ -20,6 +22,7 @@ TASK_COMPLETED_QUEUE = "task.completed"
 DEFAULT_BUCKET = storage_settings.DEFAULT_BUCKET or "mapreduce-data"
 CURRENT_TASK = None
 CURRENT_TASK_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 RABBIT_PASS = worker_settings.RABBIT_PASS
@@ -86,18 +89,37 @@ def publish_task_completed(ch, task: dict, task_type: TaskType) -> None:
             content_type="application/json",
         ),
     )
-    print(f"[{WORKER_ID}] notified planner about completed {task_type} task {task['task_id']}")
+    logger.info(
+        "notified planner about completed task %s",
+        format_log_fields(
+            worker_id=WORKER_ID,
+            job_id=task["job_id"],
+            task_id=task["task_id"],
+            task_type=task_type,
+            bucket=task.get("bucket", DEFAULT_BUCKET),
+            part_num=task.get("part_num"),
+        ),
+    )
 
 
 def callback(ch, method, properties, body):
     try:
         task = json.loads(body)
     except Exception:
-        print(f"[{WORKER_ID}] invalid message, ack and skip")
+        logger.warning("invalid task message, ack and skip %s", format_log_fields(worker_id=WORKER_ID))
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
-    print(f"[{WORKER_ID}] picked {task.get('task_id')}")
+    logger.info(
+        "picked task %s",
+        format_log_fields(
+            worker_id=WORKER_ID,
+            job_id=task.get("job_id"),
+            task_id=task.get("task_id"),
+            task_type=task.get("type"),
+            part_num=task.get("part_num"),
+        ),
+    )
 
     headers = {}
     if properties is not None:
@@ -120,10 +142,26 @@ def callback(ch, method, properties, body):
             raise ValueError(f"Unknown task type: {task_type}")
         publish_task_completed(ch, task, task_type)
         ch.basic_ack(delivery_tag=method.delivery_tag)
-        print(f"[{WORKER_ID}] completed {task.get('task_id')} type={task_type}")
+        logger.info(
+            "completed task %s",
+            format_log_fields(
+                worker_id=WORKER_ID,
+                job_id=task.get("job_id"),
+                task_id=task.get("task_id"),
+                task_type=task_type,
+            ),
+        )
 
     except Exception as exc:
-        print(f"[{WORKER_ID}] error processing {task.get('task_id')}: {exc}")
+        logger.exception(
+            "error processing task %s",
+            format_log_fields(
+                worker_id=WORKER_ID,
+                job_id=task.get("job_id"),
+                task_id=task.get("task_id"),
+                attempts=attempts,
+            ),
+        )
 
         next_attempt = attempts + 1
         headers["x-attempts"] = next_attempt
@@ -136,7 +174,15 @@ def callback(ch, method, properties, body):
                 properties=pika.BasicProperties(headers=headers, delivery_mode=2),
             )
             ch.basic_ack(delivery_tag=method.delivery_tag)
-            print(f"[{WORKER_ID}] sent to dead queue: attempts={next_attempt}")
+            logger.error(
+                "sent task to dead queue %s",
+                format_log_fields(
+                    worker_id=WORKER_ID,
+                    job_id=task.get("job_id"),
+                    task_id=task.get("task_id"),
+                    attempts=next_attempt,
+                ),
+            )
         else:
             ch.basic_publish(
                 exchange="",
@@ -145,12 +191,22 @@ def callback(ch, method, properties, body):
                 properties=pika.BasicProperties(headers=headers, delivery_mode=2),
             )
             ch.basic_ack(delivery_tag=method.delivery_tag)
-            print(f"[{WORKER_ID}] requeued task (attempt {next_attempt})")
+            logger.warning(
+                "requeued task after failure %s",
+                format_log_fields(
+                    worker_id=WORKER_ID,
+                    job_id=task.get("job_id"),
+                    task_id=task.get("task_id"),
+                    attempt=next_attempt,
+                ),
+            )
     finally:
         clear_current_task(task.get("task_id"))
 
 
 def main():
+    configure_logging("worker")
+
     conn = create_blocking_connection(
         rabbit_login=RABBIT_LOGIN,
         rabbit_pass=RABBIT_PASS,
@@ -168,7 +224,7 @@ def main():
     ch.basic_qos(prefetch_count=1)
     ch.basic_consume(queue=QUEUE_NAME, on_message_callback=callback, auto_ack=False)
 
-    print(f"[{WORKER_ID}] waiting for tasks. To exit press CTRL+C")
+    logger.info("waiting for tasks %s", format_log_fields(worker_id=WORKER_ID))
     try:
         start_heartbeat_thread(
             worker_id=WORKER_ID,

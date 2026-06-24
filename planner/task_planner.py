@@ -1,8 +1,10 @@
+import logging
 import time
 import uuid
 
 import pika
 
+from libs.logging_config import format_log_fields
 from libs.models import JobUploadedEvent, TaskType, WorkerTask
 from libs.storage_client.client import list_objects
 from libs.storage_client.config import settings
@@ -12,6 +14,7 @@ from libs.task_outputs import list_task_output_manifests
 
 QUEUE_TASKS = "tasks"
 DEFAULT_BUCKET = settings.DEFAULT_BUCKET or "mapreduce-data"
+logger = logging.getLogger(__name__)
 
 
 def send_task(
@@ -43,7 +46,18 @@ def send_task(
     body = task.model_dump_json()
     props = pika.BasicProperties(delivery_mode=2, content_type="application/json")
     ch.basic_publish(exchange="", routing_key=QUEUE_TASKS, body=body, properties=props)
-    print(f"[Planner] sent task {task.task_id} type={task.type} address={task.address} storage={task.storage}")
+    logger.info(
+        "sent worker task %s",
+        format_log_fields(
+            job_id=task.job_id,
+            task_id=task.task_id,
+            task_type=task.type,
+            address=task.address,
+            storage=task.storage,
+            bucket=task.bucket,
+            part_num=task.part_num,
+        ),
+    )
     return task
 
 

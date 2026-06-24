@@ -1,9 +1,11 @@
+import logging
 import os
 import re
 import shutil
 import time
 from dataclasses import dataclass
 
+from libs.logging_config import format_log_fields
 from libs.models import TaskOutputFile, TaskOutputManifest, TaskType
 from libs.storage_client.client import download_file, upload_file
 from libs.storage_client.config import settings
@@ -21,6 +23,7 @@ from worker.worker import (
 
 
 DEFAULT_BUCKET = settings.DEFAULT_BUCKET or "mapreduce-data"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -144,10 +147,16 @@ def process_map_task(task: dict, task_paths: TaskPaths, worker_id: str) -> None:
     # Map writes spill files first, then shuffle repartitions them into the
     # per-partition files consumed later by reduce workers.
     run_map_phase(input_file, task_paths.spill_files_dir)
-    print("Mapping phase completed. Starting shuffling phase...")
+    logger.info(
+        "mapping phase completed, starting shuffle phase %s",
+        format_log_fields(job_id=job_id, task_id=worker_task_id, worker_id=worker_id),
+    )
 
     run_shuffle_phase(task_paths.spill_files_dir, task_paths.shuffle_files_dir)
-    print("Shuffling phase completed.")
+    logger.info(
+        "shuffle phase completed %s",
+        format_log_fields(job_id=job_id, task_id=worker_task_id, worker_id=worker_id),
+    )
 
     cleanup_directory(task_paths.spill_files_dir)
 
@@ -178,11 +187,23 @@ def process_reduce_task(task: dict, task_paths: TaskPaths, worker_id: str) -> No
     bucket = task.get("bucket", DEFAULT_BUCKET)
 
     prepare_task_workspace(task_paths)
-    print("Starting reducing phase...")
+    logger.info(
+        "starting reduce phase %s",
+        format_log_fields(job_id=job_id, task_id=worker_task_id, worker_id=worker_id, part_num=part_num),
+    )
     # The reduce worker aggregates all shuffle fragments that belong to the
     # same partition number, regardless of which map worker produced them.
     part_dir = download_part_files(job_id, part_num, bucket=bucket)
-    print(f"Downloaded part files to {part_dir}")
+    logger.info(
+        "downloaded reduce input files %s",
+        format_log_fields(
+            job_id=job_id,
+            task_id=worker_task_id,
+            worker_id=worker_id,
+            part_num=part_num,
+            local_dir=part_dir,
+        ),
+    )
 
     os.makedirs(task_paths.reduce_output_dir, exist_ok=True)
 
@@ -194,13 +215,30 @@ def process_reduce_task(task: dict, task_paths: TaskPaths, worker_id: str) -> No
     )
     reduce_executor.process(part_dir=part_dir, part_num=part_num)
 
-    print("Reducing phase completed.")
-    print(f"Reduce output stored in: {task_paths.reduce_output_dir}")
+    logger.info(
+        "reduce phase completed %s",
+        format_log_fields(
+            job_id=job_id,
+            task_id=worker_task_id,
+            worker_id=worker_id,
+            part_num=part_num,
+            output_dir=task_paths.reduce_output_dir,
+        ),
+    )
 
     local_reduce_file = os.path.join(task_paths.reduce_output_dir, f"reduced_{part_num}.jsonl")
     s3_key = reduce_output_key(job_id, worker_task_id, os.path.basename(local_reduce_file))
     upload_file(local_reduce_file, bucket=bucket, key=s3_key)
-    print(f"[{worker_id}] uploaded reduce output -> {s3_key}")
+    logger.info(
+        "uploaded reduce output %s",
+        format_log_fields(
+            job_id=job_id,
+            task_id=worker_task_id,
+            worker_id=worker_id,
+            part_num=part_num,
+            key=s3_key,
+        ),
+    )
     write_task_output_manifest(
         bucket,
         TaskOutputManifest(
@@ -223,10 +261,22 @@ def upload_shuffle_files(
     worker_id: str,
 ) -> None:
     if not os.path.isdir(shuffle_dir):
-        print(f"[{worker_id}] no shuffle dir at {shuffle_dir}, nothing to upload")
+        logger.info(
+            "no shuffle directory, nothing to upload %s",
+            format_log_fields(job_id=job_id, task_id=worker_task_id, worker_id=worker_id, shuffle_dir=shuffle_dir),
+        )
         return
 
-    print(f"[{worker_id}] uploading shuffle files from {shuffle_dir} to bucket '{bucket}'")
+    logger.info(
+        "uploading shuffle files %s",
+        format_log_fields(
+            job_id=job_id,
+            task_id=worker_task_id,
+            worker_id=worker_id,
+            shuffle_dir=shuffle_dir,
+            bucket=bucket,
+        ),
+    )
 
     upload_failures = []
     outputs = []
@@ -244,16 +294,47 @@ def upload_shuffle_files(
             upload_file(local_path, bucket=bucket, key=s3_key)
             uploaded += 1
             outputs.append(TaskOutputFile(part_num=part_idx, key=s3_key))
-            print(f"[{worker_id}] uploaded {filename} -> {s3_key}")
+            logger.info(
+                "uploaded shuffle file %s",
+                format_log_fields(
+                    job_id=job_id,
+                    task_id=worker_task_id,
+                    worker_id=worker_id,
+                    filename=filename,
+                    part_num=part_idx,
+                    key=s3_key,
+                ),
+            )
         except Exception as exc:
             upload_failures.append((filename, str(exc)))
-            print(f"[{worker_id}] ERROR uploading {filename}: {exc}")
+            logger.exception(
+                "failed to upload shuffle file %s",
+                format_log_fields(
+                    job_id=job_id,
+                    task_id=worker_task_id,
+                    worker_id=worker_id,
+                    filename=filename,
+                    part_num=part_idx,
+                ),
+            )
 
     if upload_failures:
-        print(f"[{worker_id}] upload finished with {len(upload_failures)} failures: {upload_failures}")
+        logger.error(
+            "shuffle upload finished with failures %s",
+            format_log_fields(
+                job_id=job_id,
+                task_id=worker_task_id,
+                worker_id=worker_id,
+                failure_count=len(upload_failures),
+                failures=upload_failures,
+            ),
+        )
         raise RuntimeError(f"Upload errors: {len(upload_failures)} files failed")
 
-    print(f"[{worker_id}] Upload completed. {uploaded} files uploaded.")
+    logger.info(
+        "shuffle upload completed %s",
+        format_log_fields(job_id=job_id, task_id=worker_task_id, worker_id=worker_id, uploaded_files=uploaded),
+    )
     write_task_output_manifest(
         bucket,
         TaskOutputManifest(
@@ -270,11 +351,21 @@ def upload_shuffle_files(
     if os.path.isdir(task_dir):
         try:
             cleanup_directory(task_dir)
-            print(f"[{worker_id}] cleaned up local files: {task_dir}")
+            logger.info(
+                "cleaned up local task files %s",
+                format_log_fields(job_id=job_id, task_id=worker_task_id, worker_id=worker_id, task_dir=task_dir),
+            )
         except Exception as exc:
-            print(f"[{worker_id}] warning: failed to remove {task_dir}: {exc}")
+            logger.warning(
+                "failed to remove local task files %s",
+                format_log_fields(job_id=job_id, task_id=worker_task_id, worker_id=worker_id, task_dir=task_dir),
+                exc_info=True,
+            )
     else:
-        print(f"[{worker_id}] nothing to cleanup at {task_dir}")
+        logger.info(
+            "nothing to cleanup %s",
+            format_log_fields(job_id=job_id, task_id=worker_task_id, worker_id=worker_id, task_dir=task_dir),
+        )
 
 
 def detect_part_index(filename: str) -> int:
