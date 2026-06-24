@@ -104,7 +104,7 @@ def test_heartbeat_loop_publishes_heartbeat_message(monkeypatch: pytest.MonkeyPa
     assert connection.params.port == 5672
     assert connection.params.credentials.login == "login"
     assert connection.params.credentials.password == "pass"
-    assert channel.declared == [(heartbeat.HEARTBEAT_QUEUE, False)]
+    assert channel.declared == []
     assert len(channel.published) == 1
     exchange, routing_key, body = channel.published[0]
     assert exchange == ""

@@ -3,9 +3,15 @@ import logging
 import threading
 import time
 
-import pika
+from pika.exceptions import ChannelClosedByBroker
 from pydantic import ValidationError
 
+from libs.heartbeat_queue import (
+    HEARTBEAT_MESSAGE_TTL_MS,
+    HEARTBEAT_QUEUE,
+    declare_heartbeat_queue,
+    purge_heartbeat_queue,
+)
 from libs.job_repository import create_job_repository
 from libs.logging_config import configure_logging, format_log_fields
 from libs.models import JobUploadedEvent, TaskCompletedEvent, WorkerTask
@@ -17,7 +23,6 @@ from planner.task_planner import QUEUE_TASKS
 
 
 QUEUE_JOBS = "jobs"
-HEARTBEAT_QUEUE = "worker.heartbeat"
 TASK_COMPLETED_QUEUE = "task.completed"
 DEAD_TASK_QUEUE = "tasks.dead"
 RUNNING_TASK_TIMEOUT_SECONDS = settings.RUNNING_TASK_TIMEOUT_SECONDS
@@ -172,6 +177,36 @@ def start_task_timeout_monitor():
     return thread
 
 
+def prepare_heartbeat_queue(conn, ch):
+    '''
+    Declares the transient heartbeat queue and drops stale heartbeat messages.
+
+    Heartbeat messages describe current worker liveness, so old messages are
+    not useful after a planner restart. If a local RabbitMQ instance still has
+    the old queue declaration without TTL, recreate the queue once.
+    '''
+    try:
+        declare_heartbeat_queue(ch)
+    except ChannelClosedByBroker as exc:
+        if exc.reply_code != 406:
+            raise
+
+        logger.warning(
+            "recreating heartbeat queue with TTL %s",
+            format_log_fields(queue=HEARTBEAT_QUEUE, ttl_ms=HEARTBEAT_MESSAGE_TTL_MS),
+        )
+        ch = conn.channel()
+        ch.queue_delete(queue=HEARTBEAT_QUEUE)
+        declare_heartbeat_queue(ch)
+
+    purge_heartbeat_queue(ch)
+    logger.info(
+        "prepared heartbeat queue %s",
+        format_log_fields(queue=HEARTBEAT_QUEUE, ttl_ms=HEARTBEAT_MESSAGE_TTL_MS),
+    )
+    return ch
+
+
 def main():
     '''
     Starts the planner RabbitMQ consumer loop.
@@ -191,8 +226,8 @@ def main():
         retry_delay_seconds=RABBIT_CONNECT_RETRY_DELAY_SECONDS,
     )
     ch = conn.channel()
+    ch = prepare_heartbeat_queue(conn, ch)
     ch.queue_declare(queue=QUEUE_TASKS, durable=True)
-    ch.queue_declare(queue=HEARTBEAT_QUEUE, durable=False)
     ch.queue_declare(queue=QUEUE_JOBS, durable=True)
     ch.queue_declare(queue=TASK_COMPLETED_QUEUE, durable=True)
     ch.queue_declare(queue=DEAD_TASK_QUEUE, durable=True)

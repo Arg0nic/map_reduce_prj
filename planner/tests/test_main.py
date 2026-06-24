@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from libs.heartbeat_queue import HEARTBEAT_QUEUE, HEARTBEAT_QUEUE_ARGUMENTS
 import planner.main as planner_main
 
 
@@ -14,6 +15,9 @@ class FakeChannel:
     def __init__(self):
         self.acked = []
         self.nacked = []
+        self.deleted = []
+        self.declared = []
+        self.purged = []
 
     def basic_ack(self, delivery_tag):
         self.acked.append(delivery_tag)
@@ -21,9 +25,46 @@ class FakeChannel:
     def basic_nack(self, delivery_tag, requeue):
         self.nacked.append((delivery_tag, requeue))
 
+    def queue_delete(self, queue):
+        self.deleted.append(queue)
+
+    def queue_declare(self, queue, durable, arguments=None):
+        self.declared.append((queue, durable, arguments))
+
+    def queue_purge(self, queue):
+        self.purged.append(queue)
+
 
 def make_method(delivery_tag: str = "delivery-1"):
     return SimpleNamespace(delivery_tag=delivery_tag)
+
+
+def test_prepare_heartbeat_queue_declares_ttl_queue_and_purges_stale_messages() -> None:
+    channel = FakeChannel()
+    connection = SimpleNamespace(channel=lambda: channel)
+
+    prepared_channel = planner_main.prepare_heartbeat_queue(connection, channel)
+
+    assert prepared_channel is channel
+    assert channel.declared == [(HEARTBEAT_QUEUE, False, HEARTBEAT_QUEUE_ARGUMENTS)]
+    assert channel.purged == [HEARTBEAT_QUEUE]
+
+
+def test_prepare_heartbeat_queue_recreates_queue_with_incompatible_arguments() -> None:
+    class IncompatibleHeartbeatChannel(FakeChannel):
+        def queue_declare(self, queue, durable, arguments=None):
+            raise planner_main.ChannelClosedByBroker(406, "PRECONDITION_FAILED")
+
+    old_channel = IncompatibleHeartbeatChannel()
+    new_channel = FakeChannel()
+    connection = SimpleNamespace(channel=lambda: new_channel)
+
+    prepared_channel = planner_main.prepare_heartbeat_queue(connection, old_channel)
+
+    assert prepared_channel is new_channel
+    assert new_channel.deleted == [HEARTBEAT_QUEUE]
+    assert new_channel.declared == [(HEARTBEAT_QUEUE, False, HEARTBEAT_QUEUE_ARGUMENTS)]
+    assert new_channel.purged == [HEARTBEAT_QUEUE]
 
 
 def test_heartbeat_callback_acks_valid_heartbeat() -> None:

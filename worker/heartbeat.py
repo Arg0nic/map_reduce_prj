@@ -6,10 +6,10 @@ from collections.abc import Callable
 
 import pika
 
+from libs.heartbeat_queue import HEARTBEAT_QUEUE
 from libs.logging_config import format_log_fields
 
 
-HEARTBEAT_QUEUE = "worker.heartbeat"
 HEARTBEAT_INTERVAL_SECONDS = 3
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,6 @@ def heartbeat_loop(
 
     conn = pika.BlockingConnection(params)
     ch = conn.channel()
-    ch.queue_declare(queue=HEARTBEAT_QUEUE, durable=False)
     get_task_snapshot = task_snapshot_provider or (lambda: None)
 
     while True:
