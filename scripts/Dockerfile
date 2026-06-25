@@ -6,13 +6,15 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 COPY libs/requirements.txt libs/requirements.txt
-COPY planner/requirements.txt planner/requirements.txt
-RUN pip install --no-cache-dir -r planner/requirements.txt
+COPY scripts/requirements.txt scripts/requirements.txt
+RUN pip install --no-cache-dir -r scripts/requirements.txt
 
 ENV PYTHONPATH=/app
 
-COPY scripts/run_migrations.py scripts/run_migrations.py
+COPY alembic.ini alembic.ini
 COPY libs/*.py libs/
-COPY migrations/*.sql migrations/
+COPY migrations/env.py migrations/env.py
+COPY migrations/script.py.mako migrations/script.py.mako
+COPY migrations/versions/ migrations/versions/
 
-CMD ["python", "scripts/run_migrations.py"]
+CMD ["alembic", "upgrade", "head"]

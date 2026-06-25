@@ -1,0 +1,5 @@
+-r ../libs/requirements.txt
+
+SQLAlchemy>=2,<3
+psycopg[binary]>=3,<4
+alembic>=1.13,<2
