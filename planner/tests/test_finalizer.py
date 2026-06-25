@@ -47,6 +47,31 @@ def test_collect_reduce_results_merges_jsonl_reduce_outputs(
     assert list(result.keys()) == ["alpha", "beta", "gamma"]
 
 
+def test_collect_reduce_results_ignores_duplicate_output_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = reduce_output_key("job-1", "reduce-0", "reduced_0.jsonl")
+    reads = []
+    monkeypatch.setattr(
+        finalizer,
+        "list_task_output_manifests",
+        lambda bucket, job_id, task_type: [
+            make_reduce_manifest("reduce-0", 0, key),
+            make_reduce_manifest("reduce-0-duplicate", 0, key),
+        ],
+    )
+    monkeypatch.setattr(
+        finalizer,
+        "read_object_bytes",
+        lambda bucket, requested_key: reads.append(requested_key) or b'{"alpha": 3}\n',
+    )
+
+    result = finalizer.collect_reduce_results("bucket-1", "job-1")
+
+    assert result == {"alpha": 3}
+    assert reads == [key]
+
+
 def test_collect_reduce_results_rejects_missing_reduce_outputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -114,6 +139,44 @@ def test_finalize_job_uploads_result_and_updates_job_metadata(
             },
         ),
     ]
+
+
+def test_finalize_job_is_repeatable_and_keeps_done_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uploads = []
+
+    class FakeRepository:
+        def __init__(self):
+            self.job = {"job_id": "job-1", "status": JobStatus.PROCESSING.value}
+            self.updates = []
+
+        def update(self, job_id: str, patch: dict) -> dict:
+            self.updates.append((job_id, patch))
+            self.job.update(patch)
+            return dict(self.job)
+
+    repository = FakeRepository()
+    monkeypatch.setattr(finalizer, "collect_reduce_results", lambda bucket, job_id: {"alpha": 1})
+    monkeypatch.setattr(
+        finalizer,
+        "upload_bytes",
+        lambda data, bucket, key, content_type: uploads.append((data, bucket, key, content_type)),
+    )
+    monkeypatch.setattr(finalizer, "JOB_REPOSITORY", repository)
+    monkeypatch.setattr(finalizer.time, "time", lambda: 500.0)
+
+    first_key = finalizer.finalize_job("job-1", "bucket-1")
+    second_key = finalizer.finalize_job("job-1", "bucket-1")
+
+    assert first_key == second_key == result_key("job-1")
+    assert uploads == [
+        (b'{"alpha": 1}', "bucket-1", result_key("job-1"), "application/json"),
+        (b'{"alpha": 1}', "bucket-1", result_key("job-1"), "application/json"),
+    ]
+    assert repository.job["status"] == JobStatus.DONE.value
+    assert repository.job["result_key"] == result_key("job-1")
+    assert len(repository.updates) == 2
 
 
 def test_finalize_job_rejects_missing_job_metadata(

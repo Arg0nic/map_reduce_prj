@@ -30,7 +30,7 @@ def collect_reduce_results(bucket: str, job_id: str) -> dict[str, int]:
     uploads without a manifest.
     '''
     manifests = list_task_output_manifests(bucket, job_id, task_type=TaskType.REDUCE)
-    keys = sorted(output.key for manifest in manifests for output in manifest.outputs)
+    keys = sorted({output.key for manifest in manifests for output in manifest.outputs})
     if not keys:
         raise FileNotFoundError(f"No reduce output manifests found in {bucket}/{reduce_manifests_prefix(job_id)}")
 

@@ -52,6 +52,23 @@ def test_write_task_output_manifest_uploads_commit_file(monkeypatch) -> None:
     assert json.loads(data.decode("utf-8"))["task_id"] == "map-1"
 
 
+def test_write_task_output_manifest_reuses_commit_key_for_same_task(monkeypatch) -> None:
+    uploads = []
+    first_manifest = make_manifest("map-1", TaskType.MAP, 2)
+    second_manifest = make_manifest("map-1", TaskType.MAP, 2)
+
+    monkeypatch.setattr(
+        "libs.task_outputs.upload_bytes",
+        lambda data, bucket, key, content_type: uploads.append((data, bucket, key, content_type)),
+    )
+
+    first_key = write_task_output_manifest("bucket-1", first_manifest)
+    second_key = write_task_output_manifest("bucket-1", second_manifest)
+
+    assert first_key == second_key == map_manifest_key("job-1", "map-1")
+    assert [upload[2] for upload in uploads] == [map_manifest_key("job-1", "map-1")] * 2
+
+
 def test_read_task_output_manifest_parses_stored_json(monkeypatch) -> None:
     manifest = make_manifest("map-1", TaskType.MAP, 2)
     monkeypatch.setattr(
