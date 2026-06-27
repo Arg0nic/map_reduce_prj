@@ -1,10 +1,12 @@
 import time
 import uuid
+from typing import cast
 
-from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, create_engine, select
-from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy import Table, create_engine, select
+from sqlalchemy.dialects.postgresql import insert
 
 from libs.db_time import decode_timestamp_fields, encode_timestamp_fields, timestamp_to_datetime
+from libs.db_models import TaskEventRecord, TaskRecord
 from libs.models import TaskCompletedEvent, WorkerTask
 
 from .base import AbstractTaskRepository
@@ -23,42 +25,8 @@ TASK_EVENT_COMPLETED = "completed"
 TASK_EVENT_FAILED = "failed"
 
 
-def _create_task_tables():
-    metadata = MetaData()
-    tasks = Table(
-        "tasks",
-        metadata,
-        Column("task_id", String, primary_key=True),
-        Column("job_id", String),
-        Column("type", String),
-        Column("status", String),
-        Column("address", String),
-        Column("storage", String),
-        Column("bucket", String),
-        Column("part_num", Integer),
-        Column("created_at", DateTime(timezone=True)),
-        Column("published_at", DateTime(timezone=True)),
-        Column("started_at", DateTime(timezone=True)),
-        Column("completed_at", DateTime(timezone=True)),
-        Column("worker_id", String),
-        Column("attempts", Integer),
-        Column("error_message", String),
-        Column("updated_at", DateTime(timezone=True)),
-    )
-    task_events = Table(
-        "task_events",
-        metadata,
-        Column("event_id", String, primary_key=True),
-        Column("job_id", String),
-        Column("task_id", String),
-        Column("event_type", String),
-        Column("task_type", String),
-        Column("worker_id", String),
-        Column("message", String),
-        Column("payload", JSONB),
-        Column("created_at", DateTime(timezone=True)),
-    )
-    return tasks, task_events
+def _create_task_tables() -> tuple[Table, Table]:
+    return cast(Table, TaskRecord.__table__), cast(Table, TaskEventRecord.__table__)
 
 
 class PostgresTaskRepository(AbstractTaskRepository):

@@ -1,9 +1,11 @@
 import time
+from typing import cast
 
-from sqlalchemy import BigInteger, Column, DateTime, Integer, MetaData, String, Table, create_engine, select
-from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy import Table, create_engine, select
+from sqlalchemy.dialects.postgresql import insert
 
 from libs.db_time import decode_timestamp_fields, encode_timestamp_fields
+from libs.db_models import JobRecord
 
 from .base import AbstractJobRepository
 
@@ -28,26 +30,8 @@ JOB_TABLE_COLUMNS = [
 ]
 
 
-def _create_jobs_table():
-    metadata = MetaData()
-    return Table(
-        "jobs",
-        metadata,
-        Column("job_id", String, primary_key=True),
-        Column("status", String),
-        Column("original_filename", String),
-        Column("storage", String),
-        Column("bucket", String),
-        Column("chunk_count", Integer),
-        Column("total_bytes", BigInteger),
-        Column("chunks", JSONB),
-        Column("submitted_at", DateTime(timezone=True)),
-        Column("updated_at", DateTime(timezone=True)),
-        Column("completed_at", DateTime(timezone=True)),
-        Column("result_key", String),
-        Column("planner_status", String),
-        Column("planner_message", String),
-    )
+def _create_jobs_table() -> Table:
+    return cast(Table, JobRecord.__table__)
 
 
 class PostgresJobRepository(AbstractJobRepository):

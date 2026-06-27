@@ -262,6 +262,8 @@ Map output и reduce output считаются подтвержденными т
 
 Миграции PostgreSQL управляются через Alembic.
 
+Текущая схема описана SQLAlchemy ORM-моделями в `libs/db_models.py`; Alembic использует их metadata для autogenerate.
+
 Текущие ревизии:
 
 - `migrations/versions/001_create_jobs.py`;

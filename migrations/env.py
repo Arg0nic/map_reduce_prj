@@ -5,6 +5,8 @@ from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
+from libs.db_models import metadata
+
 
 load_dotenv()
 
@@ -13,7 +15,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = None
+target_metadata = metadata
 
 
 def get_database_url() -> str:
