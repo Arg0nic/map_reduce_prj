@@ -34,6 +34,21 @@ class TaskCompletedEvent(BaseModel):
     part_num: int | None = Field(default=None, ge=0)
 
 
+class WorkerCurrentTask(BaseModel):
+    job_id: str
+    task_id: str
+    type: TaskType
+    bucket: str = DEFAULT_BUCKET
+    started_at: float
+    part_num: int | None = Field(default=None, ge=0)
+
+
+class WorkerHeartbeat(BaseModel):
+    worker_id: str
+    ts: float
+    current_task: WorkerCurrentTask | None = None
+
+
 class TaskOutputFile(BaseModel):
     part_num: int = Field(ge=0)
     key: str

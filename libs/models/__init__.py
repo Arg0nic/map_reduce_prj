@@ -1,5 +1,13 @@
 from .job import ChunkInfo, Job, JobStatus, JobUploadedEvent
-from .task import TaskCompletedEvent, TaskOutputFile, TaskOutputManifest, TaskType, WorkerTask
+from .task import (
+    TaskCompletedEvent,
+    TaskOutputFile,
+    TaskOutputManifest,
+    TaskType,
+    WorkerCurrentTask,
+    WorkerHeartbeat,
+    WorkerTask,
+)
 
 __all__ = [
     "ChunkInfo",
@@ -10,5 +18,7 @@ __all__ = [
     "TaskOutputFile",
     "TaskOutputManifest",
     "TaskType",
+    "WorkerCurrentTask",
+    "WorkerHeartbeat",
     "WorkerTask",
 ]

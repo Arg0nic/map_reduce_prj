@@ -12,6 +12,8 @@ from libs.models import (
     TaskOutputFile,
     TaskOutputManifest,
     TaskType,
+    WorkerCurrentTask,
+    WorkerHeartbeat,
     WorkerTask,
 )
 from libs.storage_client.paths import map_output_key
@@ -52,6 +54,33 @@ def test_task_completed_event_accepts_reduce_part_number() -> None:
 
     assert event.task_type == TaskType.REDUCE
     assert event.part_num == 2
+
+
+def test_worker_heartbeat_serializes_current_task() -> None:
+    heartbeat = WorkerHeartbeat(
+        worker_id="worker-1",
+        ts=123.45,
+        current_task=WorkerCurrentTask(
+            job_id="job-1",
+            task_id="map-1",
+            type=TaskType.MAP,
+            bucket="bucket-1",
+            started_at=120.0,
+        ),
+    )
+
+    assert json.loads(heartbeat.model_dump_json()) == {
+        "worker_id": "worker-1",
+        "ts": 123.45,
+        "current_task": {
+            "job_id": "job-1",
+            "task_id": "map-1",
+            "type": "map",
+            "bucket": "bucket-1",
+            "started_at": 120.0,
+            "part_num": None,
+        },
+    }
 
 
 def test_task_output_manifest_serializes_task_outputs() -> None:
@@ -141,6 +170,14 @@ def test_job_model_contains_chunk_metadata_and_defaults() -> None:
             worker_id="worker-1",
             bucket="bucket-1",
             completed_at=123.45,
+            part_num=-1,
+        ),
+        lambda: WorkerCurrentTask(
+            job_id="job-1",
+            task_id="reduce-1",
+            type=TaskType.REDUCE,
+            bucket="bucket-1",
+            started_at=123.45,
             part_num=-1,
         ),
         lambda: TaskOutputFile(part_num=-1, key="key"),

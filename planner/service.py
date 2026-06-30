@@ -3,8 +3,9 @@ import time
 
 from libs.job_repository import AbstractJobRepository
 from libs.logging_config import format_log_fields
-from libs.models import JobStatus, JobUploadedEvent, TaskCompletedEvent, TaskType
+from libs.models import JobStatus, JobUploadedEvent, TaskCompletedEvent, TaskType, WorkerHeartbeat
 from libs.task_repository import AbstractTaskRepository
+from libs.worker_repository import AbstractWorkerRepository
 from planner.finalizer import finalize_job
 from planner.task_planner import create_map_tasks_for_job, create_reduce_tasks_for_job
 
@@ -25,6 +26,7 @@ class PlannerService:
         self,
         task_repository: AbstractTaskRepository | None = None,
         job_repository: AbstractJobRepository | None = None,
+        worker_repository: AbstractWorkerRepository | None = None,
     ):
         '''
         Creates a planner service.
@@ -33,6 +35,7 @@ class PlannerService:
         '''
         self.task_repository = task_repository
         self.job_repository = job_repository
+        self.worker_repository = worker_repository
 
     def _require_task_repository(self) -> AbstractTaskRepository:
         if self.task_repository is None:
@@ -71,6 +74,10 @@ class PlannerService:
 
     def record_task_failed(self, task: dict, message: str, event_type: str = "failed") -> None:
         self._require_task_repository().mark_task_failed(task, message=message, event_type=event_type)
+
+    def record_worker_heartbeat(self, heartbeat: WorkerHeartbeat) -> None:
+        if self.worker_repository is not None:
+            self.worker_repository.record_heartbeat(heartbeat)
 
     def mark_job_processing(self, job_id: str, planner_status: str, message: str) -> None:
         if self.job_repository is not None:
@@ -159,24 +166,29 @@ class PlannerService:
         )
         logger.info("planned reduce tasks %s", format_log_fields(job_id=job_id, task_count=len(tasks)))
 
-    def handle_worker_heartbeat(self, heartbeat: dict) -> None:
+    def handle_worker_heartbeat(self, heartbeat: WorkerHeartbeat) -> None:
         '''
-        Records the task currently reported by a live worker heartbeat.
+        Records worker liveness and the task currently reported by heartbeat.
         '''
-        current_task = heartbeat.get("current_task")
-        if not isinstance(current_task, dict):
+        worker_id = heartbeat.worker_id
+        if not worker_id:
             return
 
-        worker_id = heartbeat.get("worker_id")
-        started_at = current_task.get("started_at")
-        if not worker_id or started_at is None:
+        self.record_worker_heartbeat(heartbeat)
+
+        current_task = heartbeat.current_task
+        if current_task is None:
+            return
+
+        started_at = current_task.started_at
+        if started_at is None:
             return
 
         task = {
-            "job_id": current_task.get("job_id"),
-            "task_id": current_task.get("task_id"),
-            "type": current_task.get("type") or current_task.get("task_type"),
-            "part_num": current_task.get("part_num"),
+            "job_id": current_task.job_id,
+            "task_id": current_task.task_id,
+            "type": current_task.type.value,
+            "part_num": current_task.part_num,
         }
         self.record_task_started(task, worker_id=worker_id, started_at=started_at)
         logger.info(
@@ -189,6 +201,23 @@ class PlannerService:
                 part_num=task.get("part_num"),
             ),
         )
+
+    def mark_stale_workers_offline(self, timeout_seconds: float, now: float | None = None) -> int:
+        '''
+        Marks workers offline when they have not sent heartbeat recently.
+        '''
+        if self.worker_repository is None:
+            return 0
+
+        current_time = now if now is not None else time.time()
+        cutoff_timestamp = current_time - timeout_seconds
+        offline_count = self.worker_repository.mark_workers_offline(cutoff_timestamp)
+        if offline_count:
+            logger.warning(
+                "marked stale workers offline %s",
+                format_log_fields(worker_count=offline_count, timeout_seconds=timeout_seconds),
+            )
+        return offline_count
 
     def handle_map_completed(self, ch, event: TaskCompletedEvent) -> None:
         '''

@@ -14,9 +14,10 @@ from libs.heartbeat_queue import (
 )
 from libs.job_repository import create_job_repository
 from libs.logging_config import configure_logging, format_log_fields
-from libs.models import JobUploadedEvent, TaskCompletedEvent, WorkerTask
+from libs.models import JobUploadedEvent, TaskCompletedEvent, WorkerHeartbeat, WorkerTask
 from libs.rabbitmq import create_blocking_connection
 from libs.task_repository import create_task_repository
+from libs.worker_repository import create_worker_repository
 from planner.config import settings
 from planner.service import PlannerService
 from planner.task_planner import QUEUE_TASKS
@@ -27,6 +28,8 @@ TASK_COMPLETED_QUEUE = "task.completed"
 DEAD_TASK_QUEUE = "tasks.dead"
 RUNNING_TASK_TIMEOUT_SECONDS = settings.RUNNING_TASK_TIMEOUT_SECONDS
 RUNNING_TASK_TIMEOUT_CHECK_SECONDS = settings.RUNNING_TASK_TIMEOUT_CHECK_SECONDS
+WORKER_HEARTBEAT_TIMEOUT_SECONDS = settings.WORKER_HEARTBEAT_TIMEOUT_SECONDS
+WORKER_HEARTBEAT_TIMEOUT_CHECK_SECONDS = settings.WORKER_HEARTBEAT_TIMEOUT_CHECK_SECONDS
 
 RABBIT_PASS = settings.RABBIT_PASS
 RABBIT_LOGIN = settings.RABBIT_LOGIN
@@ -46,6 +49,7 @@ def get_planner_service() -> PlannerService:
         PLANNER_SERVICE = PlannerService(
             task_repository=create_task_repository(),
             job_repository=create_job_repository(),
+            worker_repository=create_worker_repository(),
         )
     return PLANNER_SERVICE
 
@@ -59,28 +63,25 @@ def heartbeat_callback(ch, method, properties, body):
     '''
     try:
         heartbeat = json.loads(body)
-    except Exception:
+        event = WorkerHeartbeat.model_validate(heartbeat)
+    except (json.JSONDecodeError, TypeError, ValidationError):
         logger.warning("invalid heartbeat message, ack and skip")
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
-    worker_id = heartbeat.get("worker_id", "unknown")
-    timestamp = heartbeat.get("ts")
+    worker_id = event.worker_id
+    timestamp = event.ts
 
-    if timestamp is None:
-        logger.warning("worker heartbeat without timestamp %s", format_log_fields(worker_id=worker_id))
-    else:
-        readable_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
-        logger.info(
-            "worker heartbeat %s",
-            format_log_fields(worker_id=worker_id, timestamp=readable_time),
-        )
+    readable_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+    logger.info(
+        "worker heartbeat %s",
+        format_log_fields(worker_id=worker_id, timestamp=readable_time),
+    )
 
-    if isinstance(heartbeat.get("current_task"), dict):
-        try:
-            get_planner_service().handle_worker_heartbeat(heartbeat)
-        except Exception as exc:
-            logger.exception("failed to handle heartbeat %s", format_log_fields(worker_id=worker_id))
+    try:
+        get_planner_service().handle_worker_heartbeat(event)
+    except Exception as exc:
+        logger.exception("failed to handle heartbeat %s", format_log_fields(worker_id=worker_id))
 
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -177,6 +178,23 @@ def start_task_timeout_monitor():
     return thread
 
 
+def start_worker_registry_monitor():
+    '''
+    Periodically marks workers offline after missing heartbeat timeout.
+    '''
+    def monitor() -> None:
+        while True:
+            time.sleep(WORKER_HEARTBEAT_TIMEOUT_CHECK_SECONDS)
+            try:
+                get_planner_service().mark_stale_workers_offline(WORKER_HEARTBEAT_TIMEOUT_SECONDS)
+            except Exception as exc:
+                logger.exception("failed to check worker heartbeat timeouts")
+
+    thread = threading.Thread(target=monitor, daemon=True)
+    thread.start()
+    return thread
+
+
 def prepare_heartbeat_queue(conn, ch):
     '''
     Declares the transient heartbeat queue and drops stale heartbeat messages.
@@ -237,6 +255,7 @@ def main():
     ch.basic_consume(queue=TASK_COMPLETED_QUEUE, on_message_callback=task_completed_callback, auto_ack=False)
     ch.basic_consume(queue=DEAD_TASK_QUEUE, on_message_callback=task_dead_callback, auto_ack=False)
     start_task_timeout_monitor()
+    start_worker_registry_monitor()
     logger.info("listening for jobs, task completions, dead tasks, and worker heartbeats")
 
     try:

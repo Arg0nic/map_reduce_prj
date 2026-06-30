@@ -108,6 +108,7 @@ services:
       LOG_LEVEL: INFO
       JOB_REPOSITORY_BACKEND: postgres
       TASK_REPOSITORY_BACKEND: postgres
+      WORKER_REPOSITORY_BACKEND: postgres
       DATABASE_URL: postgresql+psycopg://mapreduce:mapreduce_password@postgres:5432/mapreduce
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -116,6 +117,8 @@ services:
       MINIO_BUCKET: mapreduce-data
       RUNNING_TASK_TIMEOUT_SECONDS: 300
       RUNNING_TASK_TIMEOUT_CHECK_SECONDS: 30
+      WORKER_HEARTBEAT_TIMEOUT_SECONDS: 15
+      WORKER_HEARTBEAT_TIMEOUT_CHECK_SECONDS: 5
     depends_on:
       rabbitmq:
         condition: service_healthy

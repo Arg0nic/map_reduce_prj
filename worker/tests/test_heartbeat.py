@@ -178,5 +178,8 @@ def test_heartbeat_loop_includes_current_task(monkeypatch: pytest.MonkeyPatch) -
     assert json.loads(body) == {
         "worker_id": "worker-1",
         "ts": 123.45,
-        "current_task": current_task,
+        "current_task": {
+            **current_task,
+            "bucket": "mapreduce-data",
+        },
     }
