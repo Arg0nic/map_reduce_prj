@@ -73,7 +73,7 @@ def heartbeat_callback(ch, method, properties, body):
     timestamp = event.ts
 
     readable_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
-    logger.info(
+    logger.debug(
         "worker heartbeat %s",
         format_log_fields(worker_id=worker_id, timestamp=readable_time),
     )

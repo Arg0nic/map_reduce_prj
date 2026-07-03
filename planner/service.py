@@ -191,7 +191,7 @@ class PlannerService:
             "part_num": current_task.part_num,
         }
         self.record_task_started(task, worker_id=worker_id, started_at=started_at)
-        logger.info(
+        logger.debug(
             "heartbeat reports running task %s",
             format_log_fields(
                 job_id=task.get("job_id"),
