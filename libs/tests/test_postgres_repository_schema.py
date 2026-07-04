@@ -3,6 +3,7 @@ from sqlalchemy import DateTime
 from libs.db_models import metadata
 from libs.job_repository.postgres import _create_jobs_table
 from libs.task_repository.postgres import _create_task_tables
+from libs.worker_repository.postgres import _create_workers_table
 
 
 def assert_timestamptz(column) -> None:
@@ -29,12 +30,21 @@ def test_task_repository_maps_time_columns_to_timestamptz() -> None:
     assert_timestamptz(task_events.c.created_at)
 
 
+def test_worker_repository_maps_time_columns_to_timestamptz() -> None:
+    workers = _create_workers_table()
+
+    assert_timestamptz(workers.c.first_seen_at)
+    assert_timestamptz(workers.c.last_seen_at)
+    assert_timestamptz(workers.c.updated_at)
+
+
 def test_orm_metadata_contains_database_schema() -> None:
-    assert {"jobs", "tasks", "task_events"} == set(metadata.tables)
+    assert {"jobs", "tasks", "task_events", "workers"} == set(metadata.tables)
 
     jobs = metadata.tables["jobs"]
     tasks = metadata.tables["tasks"]
     task_events = metadata.tables["task_events"]
+    workers = metadata.tables["workers"]
 
     assert {index.name for index in jobs.indexes} == {
         "idx_jobs_status",
@@ -50,6 +60,10 @@ def test_orm_metadata_contains_database_schema() -> None:
         "idx_task_events_job_id",
         "idx_task_events_task_id",
         "idx_task_events_event_type",
+    }
+    assert {index.name for index in workers.indexes} == {
+        "idx_workers_status",
+        "idx_workers_last_seen_at",
     }
 
     task_job_fk = next(iter(tasks.c.job_id.foreign_keys))

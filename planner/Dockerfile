@@ -14,6 +14,7 @@ COPY libs/models/*.py libs/models/
 COPY libs/storage_client/*.py libs/storage_client/
 COPY libs/job_repository/*.py libs/job_repository/
 COPY libs/task_repository/*.py libs/task_repository/
+COPY libs/worker_repository/*.py libs/worker_repository/
 COPY planner/*.py planner/
 
 CMD ["python", "-m", "planner.main"]

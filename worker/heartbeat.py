@@ -1,4 +1,3 @@
-import json
 import logging
 import threading
 import time
@@ -8,6 +7,7 @@ import pika
 
 from libs.heartbeat_queue import HEARTBEAT_QUEUE
 from libs.logging_config import format_log_fields
+from libs.models import WorkerHeartbeat
 
 
 HEARTBEAT_INTERVAL_SECONDS = 3
@@ -37,18 +37,16 @@ def heartbeat_loop(
     get_task_snapshot = task_snapshot_provider or (lambda: None)
 
     while True:
-        message = {
-            "worker_id": worker_id,
-            "ts": time.time(),
-        }
-        current_task = get_task_snapshot()
-        if current_task is not None:
-            message["current_task"] = current_task
+        message = WorkerHeartbeat(
+            worker_id=worker_id,
+            ts=time.time(),
+            current_task=get_task_snapshot(),
+        )
 
         ch.basic_publish(
             exchange="",
             routing_key=HEARTBEAT_QUEUE,
-            body=json.dumps(message),
+            body=message.model_dump_json(exclude_none=True),
         )
         time.sleep(interval_seconds)
 

@@ -103,4 +103,18 @@ class TaskEventRecord(Base):
     task: Mapped[TaskRecord] = relationship(back_populates="events")
 
 
+class WorkerRecord(Base):
+    __tablename__ = "workers"
+    __table_args__ = (
+        Index("idx_workers_status", "status"),
+        Index("idx_workers_last_seen_at", "last_seen_at"),
+    )
+
+    worker_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 metadata = Base.metadata

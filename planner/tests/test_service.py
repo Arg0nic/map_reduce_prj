@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import planner.service as planner_service
-from libs.models import JobStatus, JobUploadedEvent, TaskCompletedEvent, TaskType
+from libs.models import JobStatus, JobUploadedEvent, TaskCompletedEvent, TaskType, WorkerHeartbeat
 from planner.service import PlannerService
 
 
@@ -100,6 +100,23 @@ class RecordingJobRepository:
         updated = {"job_id": job_id, **self.jobs.get(job_id, {}), **patch}
         self.jobs[job_id] = updated
         return updated
+
+
+class RecordingWorkerRepository:
+    def __init__(self):
+        self.heartbeats = []
+        self.offline_cutoffs = []
+        self.offline_count = 0
+
+    def record_heartbeat(self, heartbeat: WorkerHeartbeat) -> None:
+        self.heartbeats.append(heartbeat)
+
+    def mark_workers_offline(self, cutoff_timestamp: float) -> int:
+        self.offline_cutoffs.append(cutoff_timestamp)
+        return self.offline_count
+
+    def list_workers(self) -> list[dict]:
+        return []
 
 
 def make_completed_event(
@@ -210,8 +227,9 @@ def test_start_reduce_phase_records_reduce_tasks_once(
 
 def test_handle_worker_heartbeat_records_current_task() -> None:
     task_repository = RecordingTaskRepository()
-    service = PlannerService(task_repository=task_repository)
-    heartbeat = {
+    worker_repository = RecordingWorkerRepository()
+    service = PlannerService(task_repository=task_repository, worker_repository=worker_repository)
+    heartbeat = WorkerHeartbeat.model_validate({
         "worker_id": "worker-1",
         "ts": 101.0,
         "current_task": {
@@ -222,10 +240,11 @@ def test_handle_worker_heartbeat_records_current_task() -> None:
             "started_at": 100.0,
             "part_num": None,
         },
-    }
+    })
 
     service.handle_worker_heartbeat(heartbeat)
 
+    assert worker_repository.heartbeats == [heartbeat]
     assert task_repository.started == [
         (
             {
@@ -242,11 +261,25 @@ def test_handle_worker_heartbeat_records_current_task() -> None:
 
 def test_handle_worker_heartbeat_ignores_idle_worker() -> None:
     task_repository = RecordingTaskRepository()
-    service = PlannerService(task_repository=task_repository)
+    worker_repository = RecordingWorkerRepository()
+    service = PlannerService(task_repository=task_repository, worker_repository=worker_repository)
+    heartbeat = WorkerHeartbeat(worker_id="worker-1", ts=101.0)
 
-    service.handle_worker_heartbeat({"worker_id": "worker-1", "ts": 101.0})
+    service.handle_worker_heartbeat(heartbeat)
 
+    assert worker_repository.heartbeats == [heartbeat]
     assert task_repository.started == []
+
+
+def test_mark_stale_workers_offline_uses_timeout_cutoff() -> None:
+    worker_repository = RecordingWorkerRepository()
+    worker_repository.offline_count = 2
+    service = PlannerService(worker_repository=worker_repository)
+
+    offline_count = service.mark_stale_workers_offline(timeout_seconds=15, now=100.0)
+
+    assert offline_count == 2
+    assert worker_repository.offline_cutoffs == [85.0]
 
 
 def test_map_completion_starts_reduce_after_all_persisted_maps_complete() -> None:

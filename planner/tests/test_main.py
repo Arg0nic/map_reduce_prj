@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from libs.heartbeat_queue import HEARTBEAT_QUEUE, HEARTBEAT_QUEUE_ARGUMENTS
+from libs.models import WorkerHeartbeat
 import planner.main as planner_main
 
 
@@ -67,16 +68,25 @@ def test_prepare_heartbeat_queue_recreates_queue_with_incompatible_arguments() -
     assert new_channel.purged == [HEARTBEAT_QUEUE]
 
 
-def test_heartbeat_callback_acks_valid_heartbeat() -> None:
+def test_heartbeat_callback_delegates_idle_heartbeat_and_acks(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = FakeChannel()
+    calls = []
+
+    class FakePlannerService:
+        def handle_worker_heartbeat(self, heartbeat):
+            calls.append(heartbeat)
+
+    monkeypatch.setattr(planner_main, "PLANNER_SERVICE", FakePlannerService())
+    heartbeat = {"worker_id": "worker-1", "ts": 123.45}
 
     planner_main.heartbeat_callback(
         channel,
         make_method(),
         properties=None,
-        body=json.dumps({"worker_id": "worker-1", "ts": 123.45}),
+        body=json.dumps(heartbeat),
     )
 
+    assert calls == [WorkerHeartbeat.model_validate(heartbeat)]
     assert channel.acked == ["delivery-1"]
     assert channel.nacked == []
 
@@ -108,12 +118,12 @@ def test_heartbeat_callback_delegates_current_task_and_acks(monkeypatch: pytest.
         body=json.dumps(heartbeat),
     )
 
-    assert calls == [heartbeat]
+    assert calls == [WorkerHeartbeat.model_validate(heartbeat)]
     assert channel.acked == ["delivery-1"]
     assert channel.nacked == []
 
 
-def test_heartbeat_callback_acks_when_current_task_handling_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_heartbeat_callback_acks_when_heartbeat_handling_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = FakeChannel()
 
     class FailingPlannerService:
@@ -148,6 +158,20 @@ def test_heartbeat_callback_acks_invalid_json() -> None:
     channel = FakeChannel()
 
     planner_main.heartbeat_callback(channel, make_method(), properties=None, body=b"not-json")
+
+    assert channel.acked == ["delivery-1"]
+    assert channel.nacked == []
+
+
+def test_heartbeat_callback_acks_invalid_heartbeat_payload() -> None:
+    channel = FakeChannel()
+
+    planner_main.heartbeat_callback(
+        channel,
+        make_method(),
+        properties=None,
+        body=json.dumps({"worker_id": "worker-1"}),
+    )
 
     assert channel.acked == ["delivery-1"]
     assert channel.nacked == []
